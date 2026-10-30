@@ -671,7 +671,7 @@ def walk_start_still(base: Path, direction: str, item_dir: Path, *, key: str, fo
 
     Reused when the same prompt already drew it from the same base (unless `force`)."""
     with Image.open(base) as im:
-        kind = canvas_mod.resolve_key(canvas_mod.corner_key(im.convert("RGB")), key)
+        kind = canvas_mod.resolve_key(canvas_mod.corner_key(im.convert("RGB"), key), key)
     if kind not in KEY_BACKGROUND_TEXT:
         raise SystemExit(f"the {direction} walk starts from a still redrawn mid-step on a green or magenta key, and this "
                          f"base's corners are not one (key {key}); pass --walk-start as-given to film from the base itself")

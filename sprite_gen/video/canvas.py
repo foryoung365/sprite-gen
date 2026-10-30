@@ -152,19 +152,31 @@ def profile_for(state: str | None, shape: str | None = None) -> CanvasProfile:
     return STATE_CANVAS.get(key, STATE_CANVAS["default"])
 
 
-def corner_key(image: Image.Image) -> tuple[int, int, int]:
-    """The still's flat background colour, read from its four corners; refuses a non-flat one."""
+def corner_key(image: Image.Image, key: str = "auto") -> tuple[int, int, int]:
+    """The still's flat background colour, read from its four corners; refuses a non-flat one.
+
+    A model paints a chroma key a little differently at each corner, by more than a flat fill varies
+    (2026-10-30: a GPT Image 2.5 magenta whose green ran from 9 to 35 across the corners). When every
+    corner on its own is the same key's colour (`key`, or either key for `auto`), the spread is left to
+    `normalize_key`, whose matte refuses a corner it cannot cut; any other background whose corners spread
+    more than `CORNER_TOLERANCE` is refused here as before.
+    """
     rgb = image.convert("RGB")
     w, h = rgb.size
     corners = [rgb.getpixel(p) for p in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1))]
-    for channel in range(3):
-        values = [c[channel] for c in corners]
-        if max(values) - min(values) > CORNER_TOLERANCE:
-            raise SystemExit(
-                f"video-canvas: the still's corners are not one flat colour ({corners}); "
-                "generate the base on a flat chroma key before padding it"
-            )
+    spread = max(max(c[i] for c in corners) - min(c[i] for c in corners) for i in range(3))
+    if spread > CORNER_TOLERANCE and not corners_one_key(corners, key):
+        raise SystemExit(
+            f"video-canvas: the still's corners are not one flat colour ({corners}); "
+            "generate the base on a flat chroma key before padding it"
+        )
     return tuple(round(sum(c[i] for c in corners) / 4) for i in range(3))  # type: ignore[return-value]
+
+
+def corners_one_key(corners: list[tuple[int, int, int]], key: str) -> bool:
+    """Whether every corner is, on its own, the colour of one chroma key: `key`'s, or either key's for `auto`."""
+    targets = [KEY_TARGETS[key]] if key in KEY_TARGETS else list(KEY_TARGETS.values()) if key == "auto" else []
+    return any(all(is_border_key_candidate(c, target) for c in corners) for target in targets)
 
 
 def resolve_key(corner: tuple[int, int, int], key: str) -> str | None:
@@ -325,7 +337,7 @@ def pad_canvas(
     lacks and the square the rows to match, above the still. With no `view` the
     room is not read.
     """
-    corner = corner_key(image)
+    corner = corner_key(image, key)
     kind = resolve_key(corner, key)
     if kind is None:
         src, fill, key_report = image.convert("RGB"), corner, {"key": None, "key_painted": list(corner), "normalized_px": 0, "normalized_pct": 0.0}

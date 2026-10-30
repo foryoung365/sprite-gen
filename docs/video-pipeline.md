@@ -92,8 +92,12 @@ the flat corners are a green/magenta key at *any* brightness (`--key auto`, the
 default; `--key green|magenta` to insist, refused when the corners are not that
 family), the still's background is repainted to the **exact declared key** and the
 padding is that same pure key. A corner that survives the matte fails loud
-(the still is not on a key the engine can cut). `--key white` keeps the old behaviour: no
-chroma key, the padding is the corner colour.
+(the still is not on a key the engine can cut). A model may also paint each corner a
+little differently, by more than the flat-colour tolerance (`CORNER_TOLERANCE`, 24 a
+channel; a GPT Image 2.5 magenta measured 2026-10-30 ran from 9 to 35 in green): when
+every corner on its own is the same key's colour, the matte decides as above instead of
+the spread. `--key white` keeps the old behaviour: no
+chroma key, the padding is the corner colour, and corners spread past the tolerance are refused.
 
 ## 2. Clip — `sprite-gen video`
 

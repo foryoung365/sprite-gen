@@ -36,6 +36,11 @@ from .base import HIGGSFIELD_CREDIT_WORDS, provider_binary, provider_subprocess_
 BINARY = "higgsfield"
 # Replaces the binary (the test suite points it at nothing, so no test can spend credits).
 BINARY_ENV = "SPRITE_GEN_HIGGSFIELD_BIN"
+# npm puts a `.cmd` shim on PATH on Windows, and cmd.exe cuts an argument at its first line break: a prompt of
+# several lines lost everything after its first line, `--json` too ("generate cost answered no JSON", 2026-10-30).
+# The npm package carries the CLI's own executable at this path beside the shim; it is called instead.
+SHIM_SUFFIXES = (".cmd", ".bat")
+NATIVE_BESIDE_SHIM = Path("node_modules") / "@higgsfield" / "cli" / "vendor" / "hf.exe"
 LOGIN_HINT = "`higgsfield auth login` signs your Higgsfield account in"
 # The line a batch verb's log forwards to the terminal (`base.run_logged`), like a per-call API charge.
 CREDIT_WORDS = HIGGSFIELD_CREDIT_WORDS
@@ -83,9 +88,29 @@ def _said(done: subprocess.CompletedProcess) -> str:
     return " ".join((done.stderr or done.stdout or "").split())[:400]
 
 
+def binary() -> str:
+    """The CLI to call: `BINARY_ENV` when set, else `higgsfield` on PATH, or, where that is npm's cmd.exe shim,
+    the executable the npm package carries beside it (`NATIVE_BESIDE_SHIM`)."""
+    named = os.environ.get(BINARY_ENV)
+    if named:
+        return provider_binary(named)
+    found = provider_binary(BINARY)
+    if Path(found).suffix.lower() in SHIM_SUFFIXES:
+        native = Path(found).parent / NATIVE_BESIDE_SHIM
+        if native.is_file():
+            return str(native)
+    return found
+
+
 def call(args: list[str], *, timeout: float, run: Run | None = None) -> subprocess.CompletedProcess:
-    """One CLI call with `--json`; a binary that is missing or does not answer in `timeout` is a HiggsfieldError."""
-    command = [provider_binary(os.environ.get(BINARY_ENV) or BINARY), *args, "--json"]
+    """One CLI call with `--json`; a binary that is missing or does not answer in `timeout` is a HiggsfieldError.
+    A cmd.exe shim is refused an argument of several lines, which it would cut short, before it is run."""
+    program = binary()
+    if Path(program).suffix.lower() in SHIM_SUFFIXES and any("\n" in arg or "\r" in arg for arg in args):
+        raise HiggsfieldError(f"higgsfield: {program} is a cmd.exe shim, which cuts an argument at its first line "
+                              f"break, and this call carries a prompt of several lines; set {BINARY_ENV} to the CLI's "
+                              f"own executable (npm installs it as {NATIVE_BESIDE_SHIM} beside the shim)")
+    command = [program, *args, "--json"]
     try:
         # Late-bound, so a test that monkeypatches subprocess.run is followed.
         return (run or subprocess.run)(command, capture_output=True, text=True, encoding="utf-8", errors="replace",

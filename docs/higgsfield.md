@@ -23,6 +23,15 @@ higgsfield account status
 `sprite-gen workflow --kind sprite` shows the account, plan and credits under `access`. Higgsfield is listed first
 among the image providers, and no confirmation question is asked for it, because the CLI reports the account itself.
 
+### Windows
+
+npm installs the CLI as a `higgsfield.cmd` shim, and cmd.exe cuts an argument at its first line break, so a prompt
+of several lines (every prompt the engine assembles) lost the rest of the command, `--json` included, and came back
+as `generate cost answered no JSON` (2026-10-30). sprite-gen now calls the executable the npm package carries beside
+the shim (`node_modules/@higgsfield/cli/vendor/hf.exe`) instead. Where that is missing, a call with a prompt of
+several lines is refused before it runs, naming `SPRITE_GEN_HIGGSFIELD_BIN`, which points sprite-gen at any CLI
+binary and is always obeyed first.
+
 ## One job, three calls
 
 1. `generate cost` prices the job. A parameter the model does not take is refused here (for example `--quality`

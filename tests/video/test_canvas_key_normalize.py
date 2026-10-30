@@ -99,6 +99,56 @@ def test_explicit_key_that_the_corners_are_not_is_refused(tmp_path: Path) -> Non
     assert rep["key"] is None and _corners(out) == [DARK_GREEN] * 4
 
 
+# GPT Image 2.5's magenta, 2026-10-30: each corner painted a little differently; green spreads 26, over
+# CORNER_TOLERANCE, though every corner is plainly the magenta key.
+PAINTED_MAGENTA_CORNERS = [(236, 9, 237), (243, 17, 242), (233, 35, 234), (240, 27, 239)]
+
+
+def _uneven_still(tmp_path: Path, corners: list[tuple[int, int, int]], name: str = "uneven.png") -> Path:
+    """The `_still` subject on a background whose four quadrants are each their corner's colour."""
+    im = Image.open(_still(tmp_path, corners[0], name))
+    w, h = im.size
+    for (qx, qy), colour in zip(((0, 0), (1, 0), (0, 1), (1, 1)), corners):
+        for y in range(qy * h // 2, (qy + 1) * h // 2):
+            for x in range(qx * w // 2, (qx + 1) * w // 2):
+                if im.getpixel((x, y)) != SUBJECT:
+                    im.putpixel((x, y), colour)
+    p = tmp_path / name
+    im.save(p)
+    return p
+
+
+@pytest.mark.parametrize("key", ["auto", "magenta"])
+def test_key_corners_painted_unevenly_are_normalized_not_refused(tmp_path: Path, key: str) -> None:
+    still = Image.open(_uneven_still(tmp_path, PAINTED_MAGENTA_CORNERS))
+    out, rep = canvas_mod.pad_canvas(still, canvas_mod.profile_for("jump"), key=key)
+    assert rep["key"] == "magenta" and _corners(out) == [MAGENTA] * 4
+    ox, oy = rep["offset"]
+    inner = np.array(out)[oy:oy + SIZE[1], ox:ox + SIZE[0]]
+    x0, y0, x1, y1 = SUBJECT_BOX
+    subject = np.zeros(inner.shape[:2], dtype=bool)
+    subject[y0:y1, x0:x1] = True
+    assert (inner[subject] == SUBJECT).all(), "subject pixels must stay byte-identical"
+    assert (inner[~subject] == MAGENTA).all(), "every shade of the painted key becomes the exact key"
+
+
+def test_uneven_corners_that_are_not_one_key_are_still_refused(tmp_path: Path) -> None:
+    not_a_key = [IVORY, (200, 200, 200), IVORY, (200, 200, 200)]
+    with pytest.raises(SystemExit, match="not one flat colour"):
+        canvas_mod.pad_canvas(Image.open(_uneven_still(tmp_path, not_a_key)), canvas_mod.profile_for("walk"))
+    one_corner_off = PAINTED_MAGENTA_CORNERS[:3] + [IVORY]
+    with pytest.raises(SystemExit, match="not one flat colour"):
+        canvas_mod.pad_canvas(Image.open(_uneven_still(tmp_path, one_corner_off, "off.png")), canvas_mod.profile_for("walk"))
+    # --key white opts out of the chroma key, so an uneven key background is a non-flat one there
+    with pytest.raises(SystemExit, match="not one flat colour"):
+        canvas_mod.pad_canvas(Image.open(_uneven_still(tmp_path, PAINTED_MAGENTA_CORNERS, "w.png")),
+                              canvas_mod.profile_for("walk"), key="white")
+    # and corners of one key with --key naming the other are not that key
+    with pytest.raises(SystemExit, match="not one flat colour"):
+        canvas_mod.pad_canvas(Image.open(_uneven_still(tmp_path, PAINTED_MAGENTA_CORNERS, "g.png")),
+                              canvas_mod.profile_for("walk"), key="green")
+
+
 def test_run_canvas_accepts_key_and_records_it(tmp_path: Path) -> None:
     rep = canvas_mod.run_canvas(_still(tmp_path, DARK_GREEN), tmp_path / "o" / "c.png", state="walk", shape=None, facing="right", headroom=None, lead=None, report_path=None, key="green")
     assert rep["key"] == "green" and rep["key_painted"] == list(DARK_GREEN)

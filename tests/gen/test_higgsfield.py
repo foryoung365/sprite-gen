@@ -141,6 +141,49 @@ def test_a_refused_parameter_spends_nothing(tmp_path, monkeypatch):
         gen.generate_image("higgsfield", "p", tmp_path / "out.png", model="nano_banana_pro", quality="low")
 
 
+def _npm_shim(tmp_path, *, native: bool):
+    """An npm install on Windows: `higgsfield.cmd` on PATH, with or without the package's own executable."""
+    shim = tmp_path / "npm" / "higgsfield.cmd"
+    shim.parent.mkdir()
+    shim.write_text("@ECHO off\n")
+    if native:
+        exe = shim.parent / higgsfield.NATIVE_BESIDE_SHIM
+        exe.parent.mkdir(parents=True)
+        exe.write_bytes(b"MZ")
+    return shim
+
+
+def test_the_npm_shim_is_passed_over_for_the_package_executable(tmp_path, monkeypatch):
+    shim = _npm_shim(tmp_path, native=True)
+    monkeypatch.delenv(higgsfield.BINARY_ENV)
+    monkeypatch.setattr(higgsfield, "provider_binary", lambda name: str(shim) if name == higgsfield.BINARY else name)
+    assert higgsfield.binary() == str(shim.parent / higgsfield.NATIVE_BESIDE_SHIM)
+    seen = []
+    monkeypatch.setattr(subprocess, "run", lambda command, **_: seen.append(command) or
+                        subprocess.CompletedProcess(command, 0, json.dumps({"credits": 1.5}), ""))
+    job = higgsfield.Job("gpt_image_2_5", {"prompt": "a knight.\nThe view: front.", "quality": "high"})
+    assert higgsfield.cost(job) == 1.5
+    assert seen[0][0] == str(shim.parent / higgsfield.NATIVE_BESIDE_SHIM) and seen[0][-1] == "--json"
+
+
+def test_a_shim_alone_refuses_a_prompt_of_several_lines_before_it_runs(tmp_path, monkeypatch):
+    shim = _npm_shim(tmp_path, native=False)
+    monkeypatch.delenv(higgsfield.BINARY_ENV)
+    monkeypatch.setattr(higgsfield, "provider_binary", lambda name: str(shim) if name == higgsfield.BINARY else name)
+
+    def never(command, **_):
+        raise AssertionError("a shim must not be run with an argument it would cut short")
+    monkeypatch.setattr(subprocess, "run", never)
+    with pytest.raises(SystemExit, match="cuts an argument at its first line break"):
+        higgsfield.cost(higgsfield.Job("gpt_image_2_5", {"prompt": "a knight.\nThe view: front."}))
+
+
+def test_the_binary_env_still_names_the_cli(tmp_path, monkeypatch):
+    exe = tmp_path / "hf.exe"
+    monkeypatch.setenv(higgsfield.BINARY_ENV, str(exe))
+    assert higgsfield.binary() == str(exe)
+
+
 def test_sound_defaults_to_higgsfield_jobs(monkeypatch):
     monkeypatch.delenv(sound.PROVIDER_ENV, raising=False)
     assert sound.request("sfx", "whoosh", 2, False) == {
