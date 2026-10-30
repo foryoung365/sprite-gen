@@ -126,7 +126,7 @@ def _crossed_pairs() -> list[tuple[str, str]]:
 
 @pytest.mark.parametrize("base_provider,method", _crossed_pairs())
 def test_every_sprite_combination_keeps_base_and_motion_distinct(ready_login, base_provider, method):
-    view = guide.guide("sprite", choices={"image_provider": base_provider, "motion_method": method}, confirmed_access=("codex", "grok"))
+    view = guide.guide("sprite", choices={"image_provider": base_provider, "motion_method": method}, confirmed_access=("codex", "grok", "higgsfield"))
     assert view["status"] == "ready"
     assert view["pipeline"]["image_provider"] == base_provider
     assert view["pipeline"]["generation_provider"] == MOTION_METHODS[method]["provider"]

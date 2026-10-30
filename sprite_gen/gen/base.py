@@ -143,6 +143,8 @@ def provider_binary(name: str) -> str:
 # child's output in a log (`run_logged`): a call billed per call, and a default provider switched.
 API_CHARGE_WORDS = "this is a per-call API charge, not a subscription"
 PROVIDER_SWITCH_WORDS = "— falling back to"
+# The words of the line a Higgsfield job says before it is created (`higgsfield.announce`): its price in credits.
+HIGGSFIELD_CREDIT_WORDS = "spends Higgsfield credits"
 
 # The one question sprite-gen hands back instead of an image (docs/gen.md "When codex cannot run"): a call that
 # named no provider found codex unable to run, and what the user chose for that is to be asked. Nothing was
@@ -168,9 +170,10 @@ def codex_unavailable_question(cause: str, reason: str, *, flag: str = "--provid
     return {
         "cause": cause,
         "reason": reason,
-        "question": f"codex cannot run here ({reason}). Generate with the OpenAI API (billed per call), "
-                    "with Grok, or stop?",
-        "choices": {"openai": f"{flag} openai", "grok": f"{flag} grok", "stop": None},
+        "question": f"codex cannot run here ({reason}). Generate with Higgsfield (credits), with the OpenAI API "
+                    "(billed per call), with Grok, or stop?",
+        "choices": {"higgsfield": f"{flag} higgsfield", "openai": f"{flag} openai", "grok": f"{flag} grok",
+                    "stop": None},
     }
 
 
@@ -221,7 +224,7 @@ def run_logged(cmd: list[str], log: Path) -> int:
         assert child.stdout is not None
         for line in child.stdout:
             fh.write(line)
-            if API_CHARGE_WORDS in line or PROVIDER_SWITCH_WORDS in line:
+            if API_CHARGE_WORDS in line or PROVIDER_SWITCH_WORDS in line or HIGGSFIELD_CREDIT_WORDS in line:
                 print(line.rstrip("\n"), file=sys.stderr, flush=True)
         return child.wait()
 

@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sys
 import threading
 import time
@@ -809,7 +810,8 @@ def run_item(
                     still, facing_report = prepare_side(base)
                 else:
                     still = item_dir / "facing.png"
-                    facing_report = facing_mod.prepare_still(base, still, facing=facing, fix=facing_fix)
+                    facing_report = facing_mod.prepare_still(base, still, facing=facing, fix=facing_fix,
+                                                             vision=_facing_vision())
             # a lifetime is framed as an effect, whatever its name: on black, its centre kept. The view tells the
             # canvas whether a walk or run crosses the picture, whose still's room it reads (`canvas.gait_room`)
             canvas_report = canvas_mod.run_canvas(still, canvas_png, state="effect" if lifetime else state, shape=shape, facing=facing if direction not in ("front", "back") else "right", headroom=None, lead=None, report_path=canvas_report_path, fit=fit, view=direction)
@@ -1180,7 +1182,8 @@ def run_set(
             with prepare_lock:
                 if (base, turned) not in prepared:
                     corrected = root / (f"side-{turned}.facing.png" if both else "side.facing.png")
-                    report = facing_mod.prepare_still(base, corrected, facing=turned, fix=facing_fix)
+                    report = facing_mod.prepare_still(base, corrected, facing=turned, fix=facing_fix,
+                                                      vision=_facing_vision())
                     prepared[(base, turned)] = (corrected, report)
                 return prepared[(base, turned)]
         return prepare_side
@@ -1280,7 +1283,21 @@ def _parse_end_frames(values: list[str]) -> dict[str, Path]:
     return result
 
 
+def _facing_vision():
+    """Who looks at a side view's facing: the clip provider's own check (higgsfield's on the Claude subscription),
+    or None for Grok's."""
+    from sprite_gen.gen import higgsfield_video
+    if higgsfield_video.video_provider() == "higgsfield":
+        from sprite_gen.gen.higgsfield_provider import HiggsfieldProvider
+        return HiggsfieldProvider()
+    return None
+
+
 def add_arguments(parser: argparse.ArgumentParser) -> None:
+    from sprite_gen.gen import higgsfield_video
+    parser.add_argument("--provider", choices=higgsfield_video.PROVIDERS, default=None,
+                        help=f"who films every clip: higgsfield (default; {higgsfield_video.PROVIDER_ENV} changes it) "
+                             "or grok")
     parser.add_argument("--base", action="append", default=[], help="direction=still.png (repeatable: side=..., front=..., back=...); filmed facing right,left, a side or diagonal view takes one still per facing: side@right=..., side@left=...")
     parser.add_argument("--facing", default="right", help="which way the side and diagonal views face, for both prompt and canvas: right (default), left, or right,left to film each of them both ways from a still drawn each way (no mirroring); ignored for front/back")
     parser.add_argument("--facing-fix", choices=facing_mod.FIXES, default="none", help="side inputs: record only (none, default), or opt into mirror (refused with --handed)")
@@ -1336,6 +1353,10 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def run(**kwargs: object) -> int:
+    if kwargs.get("provider"):
+        # Every clip is a child `sprite-gen video`, which reads the provider from the environment it inherits.
+        from sprite_gen.gen import higgsfield_video
+        os.environ[higgsfield_video.PROVIDER_ENV] = str(kwargs["provider"])
     payload = run_set(
         end_frames=_parse_end_frames(list(kwargs.get("end_frame") or [])),
         bases=_parse_bases(list(kwargs.get("base") or [])),  # type: ignore[arg-type]

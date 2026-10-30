@@ -370,11 +370,12 @@ class VideoResult:
     output_duration: float | None = None  # extend / edit: ffprobe seconds of the published clip
     extra: dict[str, Any] = field(default_factory=dict)
     facing: dict[str, Any] | None = None
+    provider: str = "grok-imagine"
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "kind": "sprite-gen-video-report",
-            "provider": "grok-imagine",
+            "provider": self.provider,
             "auth_source": self.auth_source,
             "model": self.model,
             "mode": self.mode,
@@ -1002,7 +1003,14 @@ def _add_prompt_and_report(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--report", type=Path, help="write the sprite-gen-video-report JSON here")
 
 
+def _add_provider(parser: argparse.ArgumentParser) -> None:
+    from . import higgsfield_video
+    parser.add_argument("--provider", choices=higgsfield_video.PROVIDERS, default=None,
+                        help=f"higgsfield (default; {higgsfield_video.PROVIDER_ENV} changes it) or grok")
+
+
 def add_arguments(parser: argparse.ArgumentParser) -> None:
+    _add_provider(parser)
     parser.add_argument("--direction", choices=("side", "front", "back", "front_diagonal", "back_diagonal"), help="sprite view; side opts into facing inspection before video generation")
     parser.add_argument("--facing", choices=FACINGS, default="right", help="with --direction side: required direction (default right)")
     parser.add_argument("--facing-fix", choices=facing_mod.FIXES, default="none", help="with --direction side: record only (none, default), or opt into mirror")
@@ -1039,6 +1047,7 @@ def add_edit_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def add_resume_arguments(parser: argparse.ArgumentParser) -> None:
+    _add_provider(parser)
     parser.add_argument("--request-id", required=True,
                         help="the request_id an unfinished video / video-extend / video-edit / video-resume run named")
     parser.add_argument("--out", required=True, type=Path, help="destination .mp4")
@@ -1088,6 +1097,9 @@ def _run(args: argparse.Namespace) -> int:
         reference_images=list(args.reference_images or []),
         direction=args.direction, facing=args.facing, facing_fix=args.facing_fix,
     )
+    from . import higgsfield_video
+    if higgsfield_video.video_provider(args.provider) == "higgsfield":
+        return _publish_report(args, lambda: higgsfield_video.generate_video(request))
     return _publish_report(args, lambda: generate_video(request))
 
 
@@ -1103,6 +1115,9 @@ def _run_edit(args: argparse.Namespace) -> int:
 
 def _run_resume(args: argparse.Namespace) -> int:
     request = ResumeRequest(request_id=args.request_id, out=args.out)
+    from . import higgsfield_video
+    if higgsfield_video.video_provider(args.provider) == "higgsfield":
+        return _publish_report(args, lambda: higgsfield_video.resume_video(request))
     return _publish_report(args, lambda: resume_video(request))
 
 

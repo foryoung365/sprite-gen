@@ -4,7 +4,8 @@
 Single source of truth for provider-backed image generation: codex (`image_gen`,
 the ChatGPT login; an API-key login bills per call and says so), grok (Imagine, the
 Grok login; XAI_API_KEY only without one, billed per call and said) and openai
-(Images REST, OPENAI_API_KEY).
+(Images REST, OPENAI_API_KEY) and higgsfield (GPT Image 2.5 and the other Higgsfield image
+models through the signed-in `higgsfield` CLI, spending Higgsfield credits; the default here).
 One call = prompt (+ optional refs) -> one verified raw PNG, with an optional
 deterministic transparent chroma post-process. The general `image-gen` skill is a
 thin shuttle over `sprite-gen gen`.
@@ -27,7 +28,7 @@ out of a chroma background (`chroma`). `--transparent` follows the provider's
 strategy unless `--alpha-mode` overrides it.
 
 CLI:
-    sprite-gen gen --provider codex|grok|openai --prompt "..." --out DEST.png
+    sprite-gen gen --provider higgsfield|codex|grok|openai --prompt "..." --out DEST.png
         [--ref REF.png ...] [--transparent [--alpha-mode auto|native|chroma]
         [--chroma-key magenta|green]] [--white-check CHECK.png] [--model ID]
         [--aspect-ratio 1:1] [--quality low|medium|high|xhigh|max|auto]
@@ -74,10 +75,11 @@ from .base import (
 )
 from .codex_provider import CodexProvider
 from .grok_provider import GrokProvider
+from .higgsfield_provider import HiggsfieldProvider
 from .openai_provider import OpenAIProvider
 from sprite_gen.util.console import utf8_streams
 
-PROVIDERS = ("codex", "grok", "openai")
+PROVIDERS = ("codex", "grok", "openai", "higgsfield")
 # `--alpha-mode`: `auto` reads the provider's declared strategy (the SSoT);
 # `native` / `chroma` force one. Forcing `native` on a chroma-only provider fails
 # loud — a strategy the backend cannot execute is not a fallback candidate.
@@ -89,7 +91,13 @@ ALPHA_MODES = (ALPHA_MODE_AUTO, *TRANSPARENCY_STRATEGIES)
 # An EXPLICIT `--provider` is always honored exactly — an explicitly named provider
 # that is down fails loud at generation time.
 DEFAULT_PROVIDER_ENV = "SPRITE_GEN_DEFAULT_PROVIDER"
-HARD_DEFAULT_PROVIDER = "codex"
+# This fork's default is higgsfield (2026-10-30): codex stays a provider to name, not the default.
+# SPRITE_GEN_HARD_DEFAULT_PROVIDER replaces it at import (the test suite sets codex to run upstream's tests on
+# upstream's default); SPRITE_GEN_DEFAULT_PROVIDER, read at every call, still comes first.
+HARD_DEFAULT_PROVIDER_ENV = "SPRITE_GEN_HARD_DEFAULT_PROVIDER"
+HARD_DEFAULT_PROVIDER = os.environ.get(HARD_DEFAULT_PROVIDER_ENV, "").strip() or "higgsfield"
+if HARD_DEFAULT_PROVIDER not in PROVIDERS:
+    raise SystemExit(f"gen: {HARD_DEFAULT_PROVIDER_ENV}={HARD_DEFAULT_PROVIDER!r} is not a known provider")
 # A per-call API-billed backend is never a default: only a choice the user made
 # reaches it, so nothing routes a subscription user onto metered credit unasked
 # (구독 우선 불변식 1-2).
@@ -102,7 +110,7 @@ EXPLICIT_ONLY_PROVIDERS = ("openai",)
 # key CODEX_UNAVAILABLE_SETTING), else `ask`. Until 2.44.0 it went to grok unasked.
 CODEX_UNAVAILABLE_ENV = "SPRITE_GEN_CODEX_UNAVAILABLE"
 CODEX_UNAVAILABLE_SETTING = "codex_unavailable"
-CODEX_UNAVAILABLE_CHOICES = ("ask", "grok", "openai")
+CODEX_UNAVAILABLE_CHOICES = ("ask", "grok", "openai", "higgsfield")
 CODEX_UNAVAILABLE_DEFAULT = "ask"
 
 # `--layout-guide`: the one-slot form of the guide `prepare` draws for every row
@@ -232,6 +240,8 @@ def _make_provider(name: str, *, keep_session: bool):
         return GrokProvider()
     if name == "openai":
         return OpenAIProvider()
+    if name == "higgsfield":
+        return HiggsfieldProvider()
     raise SystemExit(f"gen: unknown provider {name!r}; expected one of {', '.join(PROVIDERS)}")
 
 
@@ -330,6 +340,11 @@ def resolve_default_provider() -> tuple[str, dict[str, str] | None]:
         if not ok:
             return codex_unavailable("login", reason, default_source=source)
     return default, None
+
+
+def default_is_codex() -> bool:
+    """Whether a call that names no provider starts on codex (and so can need the codex-unavailable choice)."""
+    return (os.environ.get(DEFAULT_PROVIDER_ENV, "").strip() or HARD_DEFAULT_PROVIDER) == "codex"
 
 
 def codex_unavailable_choice() -> tuple[str, str]:
@@ -766,7 +781,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         default=None,
         help=(
             f"generation backend; default resolves via {DEFAULT_PROVIDER_ENV} env "
-            "then codex. A default codex that cannot run (not signed in, or its usage used up) "
+            f"then {HARD_DEFAULT_PROVIDER} (Higgsfield credits). A default codex that cannot run (not signed in, or its usage used up) "
             f"asks (exit {CODEX_UNAVAILABLE_EXIT}) or runs what was chosen for that "
             f"(`sprite-gen defaults save --codex-unavailable`, {CODEX_UNAVAILABLE_ENV}). "
             "codex and grok run on a subscription login; openai is for servers and SaaS "

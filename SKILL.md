@@ -1,7 +1,7 @@
 ---
 name: sprite-gen
 version: 3.10.1
-description: "Generates images and game sprites through GPT or Grok with guided provider choices, separate saved defaults, automatic cleanup and optional curation. Handles sprite requests, ordinary image generation/editing, typography logos (로고, 타이포그래피, 타이틀 글자, 타이틀 로고, wordmark, logo, title lettering: a title screen drawn with the title in it, its lettering lifted out transparent), standalone image-to-video clips (i2v, animate this still, 그록 영상, 이매진 비디오, 스틸 움직여줘, first/last frame, reference-to-video, 영상 이어붙이기, 영상 편집, extend/edit a clip), clips from a video MCP on the agent (ZCRE, 지크 MCP), chroma removal, animation atlases, video loops, 큐레이션뷰, image candidates, 팔레트 스왑, palette swap, recolor, engine exports, repeating backgrounds, projected shadows, talking face layers over body motions (말하는 얼굴, 입 맞추기, 얼굴 층, lip sync, face pack), motion/contact inspection and optional scene composition from existing assets."
+description: "Generates images and game sprites through Higgsfield (the default here), GPT or Grok with guided provider choices, separate saved defaults, automatic cleanup and optional curation. Handles sprite requests, ordinary image generation/editing, typography logos (로고, 타이포그래피, 타이틀 글자, 타이틀 로고, wordmark, logo, title lettering: a title screen drawn with the title in it, its lettering lifted out transparent), standalone image-to-video clips (i2v, animate this still, 그록 영상, 이매진 비디오, 스틸 움직여줘, first/last frame, reference-to-video, 영상 이어붙이기, 영상 편집, extend/edit a clip), clips from a video MCP on the agent (ZCRE, 지크 MCP), chroma removal, animation atlases, video loops, 큐레이션뷰, image candidates, 팔레트 스왑, palette swap, recolor, engine exports, repeating backgrounds, projected shadows, talking face layers over body motions (말하는 얼굴, 입 맞추기, 얼굴 층, lip sync, face pack), motion/contact inspection and optional scene composition from existing assets."
 license: Apache-2.0
 depends_on:
   required_bins:
@@ -49,6 +49,8 @@ Generation entry points: **make sprites**, **make an image**, or **animate a sti
 
 ## Start every generation request here
 
+**This fork spends Higgsfield credits by default** for images, clips and sounds, through the signed-in `higgsfield` CLI; codex, Grok, OpenAI and ElevenLabs run only when named. Read [higgsfield](docs/higgsfield.md). On Windows the venv's entry point is `$SPRITE_GEN_ROOT/.venv/Scripts/sprite-gen.exe` (and `python.exe`) where this guide says `.venv/bin/`.
+
 For a standalone video clip, read [video](docs/video.md) and use `sprite-gen video`.
 This route works from any agent engine and delivers a verified MP4 plus report.
 For sprites or ordinary images, use the guides below.
@@ -62,7 +64,7 @@ $SPRITE_GEN_ROOT/.venv/bin/sprite-gen workflow --kind image
 
 ## When codex cannot run — exit 75
 
-A call that names no provider (`gen`, `logo`, `gen-set`, `video-set`'s mid-step redraw) runs on codex. When codex cannot run here — not signed in, or the codex usage of the account used up — and the user's choice for that is to ask (the default), the command generates nothing, prints one stderr line starting `sprite-gen ask codex-unavailable:` followed by JSON, and ends with **exit 75**. That is a question for the user, not a failure: never answer it yourself, never retry without the answer, never switch provider on your own.
+This applies only where codex is the default (`SPRITE_GEN_DEFAULT_PROVIDER=codex`); in this fork a call that names no provider runs on Higgsfield. Where codex is the default, a call that names no provider (`gen`, `logo`, `gen-set`, `video-set`'s mid-step redraw) runs on codex. When codex cannot run here — not signed in, or the codex usage of the account used up — and the user's choice for that is to ask (the default), the command generates nothing, prints one stderr line starting `sprite-gen ask codex-unavailable:` followed by JSON, and ends with **exit 75**. That is a question for the user, not a failure: never answer it yourself, never retry without the answer, never switch provider on your own.
 
 Ask it in these words, with the reason from the line's `cause` (`login`: "로그인이 없어요", `usage-limit`: "사용량을 다 썼어요"):
 
@@ -90,11 +92,12 @@ front-facing observations also remain unchanged. Mirroring does not preserve lef
 
 | Task | Entry | Contract |
 |---|---|---|
+| Image sprites (Higgsfield by default) | `prepare`, `gen-set`, `extract`, compose and QA | [atlas-workflow](docs/atlas-workflow.md), [higgsfield](docs/higgsfield.md) |
 | GPT image sprites | `prepare`, `gen-set --provider codex`, `extract`, compose and QA | [atlas-workflow](docs/atlas-workflow.md) |
 | Standalone video / animate a still, pin a last frame, reference images | `video` (`--image`, `--last-frame`, `--reference`) | [video](docs/video.md) |
 | Continue or edit an existing clip | `video-extend`, `video-edit` | [video](docs/video.md) |
 | A clip run left unfinished (its line or report names a `request_id`): ask for it again, never submit it again | `video-resume --request-id <id>` | [video](docs/video.md#sprite-gen-video-resume--ask-again-for-an-unfinished-generation) |
-| Grok video sprites | `video-set` | [video-pipeline](docs/video-pipeline.md) |
+| Video sprites (Higgsfield by default; `--provider grok` for Grok) | `video-set` | [video-pipeline](docs/video-pipeline.md), [higgsfield](docs/higgsfield.md#clips) |
 | A soft part of a walk loop or cycle frames sways with the body (the Sway layer): an ellipse after `video-cycle-align`, `--read-on <sha256>` for a cut, `--stretch-floor D` for least area, `--frames` for full frames, `--breathe` for the breath drive, a flat share to move a region whole, `--gain-across` for across gain, and `--reference` for a way in or out of a loop | `video-sway` (old name `video-follow`) | [video-pipeline](docs/video-pipeline.md#6-the-sway-layer--video-sway) |
 | Where an ellipse is carried in every other cell, and what the move changes there (an arm crossing a chest moves with it; the stretch, the bend and the seam): a record and boards of every cell, nothing moved; a seam under a third moving region is not counted | `video-sway-inspect` (old name `video-follow-inspect`) | [video-pipeline](docs/video-pipeline.md#inspecting-a-sway--video-sway-inspect) |
 | A set's directions on one sheet, standing on one ground line (a 3×3 board, an engine import) | `video-set-sheet` | [video-pipeline](docs/video-pipeline.md#7-one-sheet-for-a-set--video-set-sheet) |
@@ -105,7 +108,7 @@ front-facing observations also remain unchanged. Mirroring does not preserve lef
 | Restore post-processing damage in the current cut from its exact source times, preserving normal cells and playback | `video-source-manifest` → `video-loop-repair` → `video-loop-compare` | [source restoration](docs/loop-comparison.md#restoring-the-active-cut-from-source) |
 | Video sprites from a clip your agent makes with a connected video MCP (ZCRE, 지크) | `video-canvas`, `video-prompt --no-last-frame`, the agent's own MCP tools (quote, user approval, generate, save the mp4), then `video-frames` and `video-loop`, and for a walk or run cut in two or more directions `video-cycle-align --view …` over their loop directories. sprite-gen never calls the MCP. | [video-pipeline](docs/video-pipeline.md#a-clip-from-a-video-mcp-on-your-agent--zcre) |
 | Typography logo, wordmark or title lettering (로고, 타이포그래피, 타이틀 글자): the title lettered into a title screen or poster first, then only its lettering redrawn on a key and cut out with its glow; the text is read back and a misspelt logo refused | `logo --text … --style …` (`--mood` to start from a picture you have, `--lettering` to cut again for nothing) | [logo](docs/logo.md) |
-| Ordinary image or edit | `gen --provider codex` or `gen --provider grok` (the subscription login first; without one grok uses `XAI_API_KEY`, and a codex signed in with an API key bills it — both per call, said on stderr) | [gen](docs/gen.md) |
+| Ordinary image or edit | `gen` (Higgsfield, the default: [higgsfield](docs/higgsfield.md#images)), `gen --provider codex` or `gen --provider grok` (the subscription login first; without one grok uses `XAI_API_KEY`, and a codex signed in with an API key bills it — both per call, said on stderr) | [gen](docs/gen.md) |
 | Pixel art the model draws directly as a grid, 8–48 px, on your Claude subscription (`claude` signed in), or without one on `ANTHROPIC_API_KEY`, **billed per call** | `pixel-draw` | [pixel-draw](docs/pixel-draw.md) |
 | Image generation with no login available (server, container, SaaS) | `gen --provider openai` — server/SaaS route on `OPENAI_API_KEY`, **billed per call**, never a default; it runs only when named, or when the user chose it for a codex that cannot run | [gen](docs/gen.md#subscription-first--openai-runs-only-when-you-chose-it) |
 | Base and direction anchors | `anchor` | [directional-anchor-workflow](docs/directional-anchor-workflow.md) |
@@ -123,7 +126,7 @@ front-facing observations also remain unchanged. Mirroring does not preserve lef
 | Duplicate poses, foot contact and stride measurement | `inspect-motion` | [asset-tools](docs/asset-tools.md#motion-and-contact-evidence) |
 | Optional scene placement, lighting, camera and render | `scene-render`, `scene-inspect` | [scene](docs/scene.md) |
 | What the engine can do, for an agent or a tool to read once: every verb and argument, the providers each may call and be billed by (one JSON line, a quarter of every `--help`); a sandbox that reaches the providers through a relay: `SPRITE_GEN_<PROVIDER>_BASE_URL` (`OPENAI`, `XAI`, `ANTHROPIC`, `ELEVENLABS`) moves a provider's calls and the files it hands back, `SPRITE_GEN_LOGINS=off` runs every call on its API key | `capabilities` | [capabilities](docs/capabilities.md), [provider addresses](docs/gen.md#provider-addresses) |
-| Defaults | `defaults show`, `defaults save` (`--codex-unavailable ask\|grok\|openai`: what to do when codex cannot run), `defaults clear` | [user-workflow](docs/user-workflow.md#one-settings-owner) |
+| Defaults | `defaults show`, `defaults save` (`--codex-unavailable ask\|grok\|openai\|higgsfield`: what to do when codex cannot run), `defaults clear` | [user-workflow](docs/user-workflow.md#one-settings-owner) |
 
 Say a thing once: what an option says, leave out of the prompt. `--direction`, `--facing`, `--handed`, the key background and `video --direction side` each add their own sentence after your text, in one place. Your prompt carries the subject, its design and its pose. Text that says the opposite of an option ("facing left" with `--facing right`, the item on the other wrist) is sent as written with a warning (`extra.prompt_notes`, `video-prompt`'s `warnings`): fix the prompt, do not send it — [prompt-assembly](docs/prompt-assembly.md).
 

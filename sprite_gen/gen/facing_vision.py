@@ -82,6 +82,30 @@ def codex_inspect(path: Path, workdir: Path, *, prompt: str = INSPECTION_PROMPT,
         return output.read_text(encoding="utf-8"), {"transport": "codex-exec", "auth_source": login.source, **named}
 
 
+def claude_inspect(path: Path, *, prompt: str = INSPECTION_PROMPT, label: str = FACING_LABEL,
+                   send=None) -> tuple[str, dict]:
+    """The question answered on the Claude subscription (`claude -p`), for a provider with no vision model of its
+    own (higgsfield). The login only: an API key would bill per call, so its absence is a refusal, not a route."""
+    from . import anthropic_api, claude_login
+    from .base import logins_on
+    if not logins_on() or claude_login.login() is None:
+        raise SystemExit(f"{_tag(label)}: higgsfield has no vision model and this check runs on your Claude "
+                         f"subscription, which is not signed in here ({claude_login.LOGIN_HINT})")
+    from PIL import Image
+    with Image.open(path) as image:
+        media_type = Image.MIME.get(image.format or "", "image/png")
+    content = [{"type": "image", "source": {"type": "base64", "media_type": media_type,
+                                            "data": base64.b64encode(path.read_bytes()).decode("ascii")}},
+               {"type": "text", "text": prompt}]
+    body = anthropic_api.message_body(system=None, content=content, effort="low", max_tokens=4096)
+    try:
+        reply = (send or claude_login.send_message)(body, label=_tag(label))
+    except anthropic_api.ApiError as exc:
+        raise SystemExit(f"{_tag(label)}: {exc}") from exc
+    return reply.text, {"model": reply.model, "auth_source": claude_login.AUTH_SOURCE_LOGIN,
+                        "transport": "claude-login"}
+
+
 def grok_inspect(path: Path, *, credential=None, call=None, prompt: str = INSPECTION_PROMPT,
                  detail: str = "low", label: str = FACING_LABEL) -> tuple[str, dict]:
     from . import address, xai

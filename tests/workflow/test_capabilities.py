@@ -89,7 +89,7 @@ def test_every_flag_a_verbs_help_prints_is_listed(monkeypatch) -> None:
 def test_types_defaults_and_flags_are_written_as_json() -> None:
     gen = {arg["name"]: arg for arg in _document()["verbs"]["gen"]["args"]}
     assert gen["--out"]["type"] == "path" and gen["--out"]["required"] is True
-    assert gen["--provider"]["choices"] == ["codex", "grok", "openai"]
+    assert gen["--provider"]["choices"] == ["codex", "grok", "openai", "higgsfield"]
     slicing = {arg["name"]: arg for arg in _document()["verbs"]["slice-sheet"]["args"]}
     assert slicing["--grid"] == {"name": "--grid", "type": "grid", "default": [3, 2]}
     assert slicing["--cell-width"] == {"name": "--cell-width", "type": "int", "default": 512}

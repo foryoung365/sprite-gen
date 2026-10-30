@@ -28,8 +28,9 @@ class _Vision:
 
 
 def prepare_still(source: Path, out: Path, *, facing: str = "right", fix: str = "none",
-                  credential: Credential | None = None, call: HttpCall | None = None) -> dict:
-    """Inspect once on the video provider; copy unchanged unless correction is opted in."""
+                  credential: Credential | None = None, call: HttpCall | None = None, vision=None) -> dict:
+    """Inspect once on the video provider; copy unchanged unless correction is opted in. `vision` is a provider
+    with its own `inspect_facing` (higgsfield's runs on the Claude subscription); omitted, Grok looks."""
     policy.validate(facing, fix)
     if fix not in FIXES:
         raise SystemExit("video facing: expected mirror or none")
@@ -37,7 +38,7 @@ def prepare_still(source: Path, out: Path, *, facing: str = "right", fix: str = 
     if source == out:
         raise SystemExit("video facing: corrected copy must not overwrite the source")
     publish_png(source.read_bytes(), out, label="video-facing")
-    observed = policy.inspect(_Vision(credential, call), out, out.parent)
+    observed = policy.inspect(vision or _Vision(credential, call), out, out.parent)
     report = {**observed, "requested": facing, "fix": fix, "action": "none",
               "source": str(source), "source_sha256": digest(source), "out": str(out),
               "final_direction": observed["direction"], "final_direction_source": "observation"}

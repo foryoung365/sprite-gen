@@ -151,7 +151,8 @@ def test_no_codex_login_and_nothing_chosen_ends_with_the_question_and_draws_noth
     assert [line for line in run.stderr.splitlines() if line.startswith(base.CODEX_UNAVAILABLE_ASK)] != []
     question = base.asked_codex_unavailable(run.stderr)
     assert question["cause"] == "login" and question["reason"] == "codex CLI not found on PATH"
-    assert question["choices"] == {"openai": "--provider openai", "grok": "--provider grok", "stop": None}
+    assert question["choices"] == {"higgsfield": "--provider higgsfield", "openai": "--provider openai",
+                                   "grok": "--provider grok", "stop": None}
     assert "OpenAI API" in question["question"] and "Grok" in question["question"] and "stop" in question["question"]
     assert not out.exists() and not report.exists()
 
@@ -343,7 +344,8 @@ def test_video_set_whose_mid_step_redraw_asked_stops_with_the_same_question(tmp_
                       align_cycles="off")
     question = asked.value.question
     assert asked.value.code == base.CODEX_UNAVAILABLE_EXIT and question["cause"] == "login"
-    assert question["choices"] == {"openai": "--still-provider openai", "grok": "--still-provider grok", "stop": None}
+    assert question["choices"] == {"higgsfield": "--still-provider higgsfield", "openai": "--still-provider openai",
+                                   "grok": "--still-provider grok", "stop": None}
     payload = json.loads((root / "set.report.json").read_text(encoding="utf-8"))
     assert payload["asked"] == question and payload["items"][0]["asked"]["cause"] == "login"
 
@@ -363,7 +365,7 @@ def test_the_guide_asks_what_to_do_when_codex_cannot_run_once_and_the_answer_is_
     view = guide.guide("image", **request)
     asked = [q for q in view["questions"] if q["field"] == "codex_unavailable"]
     assert view["status"] == "needs-input" and len(asked) == 1
-    assert list(asked[0]["options"]) == ["ask", "grok", "openai"] and "과금" in asked[0]["options"]["openai"]
+    assert list(asked[0]["options"]) == ["ask", "grok", "openai", "higgsfield"] and "과금" in asked[0]["options"]["openai"]
     assert view["codex_unavailable"] == {"choice": "ask", "source": "default"}
     saved = preferences.save_settings(None, {}, general={"codex_unavailable": "ask"},
                                       expected_revision=view["settings_revision"])

@@ -3,6 +3,10 @@
 from sprite_gen.gen import CODEX_UNAVAILABLE_CHOICES, CODEX_UNAVAILABLE_SETTING, PROVIDERS
 
 MOTION_METHODS = {
+    "higgsfield-rows": {"label": "힉스필드 이미지 스프라이트", "provider": "higgsfield", "doc": "docs/atlas-workflow.md",
+                        "steps": ["prepare", "gen-set", "extract", "compose-atlas", "compose-gif"]},
+    "higgsfield-video": {"label": "힉스필드 영상", "provider": "higgsfield", "doc": "docs/video-pipeline.md",
+                         "steps": ["video-set"]},
     "gpt-rows": {"label": "지피티 이미지 스프라이트", "provider": "codex", "doc": "docs/atlas-workflow.md",
                  "steps": ["prepare", "gen-set", "extract", "compose-atlas", "compose-gif"]},
     "grok-video": {"label": "그록 영상", "provider": "grok", "doc": "docs/video-pipeline.md",
@@ -15,12 +19,14 @@ PROVIDER_LABELS = {
     "codex": "지피티",
     "grok": "그록",
     "openai": "지피티 API (서버·SaaS 용, 호출당 과금)",
+    "higgsfield": "힉스필드 (Higgsfield 크레딧)",
 }
 # Subscription-first (수홍 2026-09-20): the guided flow offers only the routes
 # that run on a subscription the user already pays for as the image provider.
 # `openai` spends metered API credit per call, so it is never offered there; the
 # one place it is a choice is the answer for a codex that cannot run (below).
-GUIDED_PROVIDERS = ("codex", "grok")
+# Higgsfield spends credits of a plan the user already pays for, and is this fork's default (2026-10-30).
+GUIDED_PROVIDERS = ("higgsfield", "codex", "grok")
 _unlabelled = [provider for provider in PROVIDERS if provider not in PROVIDER_LABELS]
 if _unlabelled:
     raise RuntimeError(f"workflow catalog: no label for provider(s) {', '.join(_unlabelled)}")
@@ -30,9 +36,9 @@ if _unregistered:
 
 FIELDS = {
     "image_provider": {"options": {provider: PROVIDER_LABELS[provider] for provider in GUIDED_PROVIDERS},
-                       "question": "이미지를 지피티로 만들까요, 그록으로 만들까요?"},
+                       "question": "이미지를 힉스필드, 지피티, 그록 중 무엇으로 만들까요?"},
     "motion_method": {"options": {k: v["label"] for k, v in MOTION_METHODS.items()},
-                      "question": "동작을 그록 영상으로 만들까요, 지피티 이미지 스프라이트로 만들까요?"},
+                      "question": "동작을 어떤 방법으로 만들까요?"},
     "curation": {"options": {"open": "열기", "skip": "열지 않기"},
                  "question": "큐레이션뷰에서 결과를 확인하고 골라볼까요?"},
 }
@@ -41,7 +47,8 @@ FIELDS = {
 # `gen.codex_unavailable_choice` reads it, docs/gen.md "When codex cannot run" owns the rule.
 GENERAL_FIELDS = {
     CODEX_UNAVAILABLE_SETTING: {
-        "options": {"ask": "멈추고 묻기 (기본)", "grok": "그록으로 만들기", "openai": "OpenAI API 로 만들기 (호출당 과금)"},
+        "options": {"ask": "멈추고 묻기 (기본)", "grok": "그록으로 만들기", "openai": "OpenAI API 로 만들기 (호출당 과금)",
+                    "higgsfield": "힉스필드로 만들기 (크레딧 차감)"},
         "question": "지피티(codex)를 쓸 수 없을 때 — 로그인이 없거나 사용량을 다 썼을 때 — 어떻게 할까요?",
     },
 }

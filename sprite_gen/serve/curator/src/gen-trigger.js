@@ -10,11 +10,12 @@
 // "보간은 클릭하면 모델선택이고 리롤은 alt클릭이고 다 지멋대로".
 
 const GEN_PROVIDERS = [
+  { value: "higgsfield", label: "Higgsfield" },
   { value: "codex", label: "GPT" },
   { value: "grok", label: "Grok" },
 ];
 
-// 공용 모델 선택 위젯 — 표기/순서/기본값(codex)의 유일한 자리
+// 공용 모델 선택 위젯 — 표기/순서/기본값(higgsfield)의 유일한 자리
 function makeProviderSelect() {
   const sel = document.createElement("select");
   for (const p of GEN_PROVIDERS) {

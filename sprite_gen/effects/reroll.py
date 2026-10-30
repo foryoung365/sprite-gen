@@ -67,7 +67,7 @@ def record_take(run_dir: Path, state: str, label: str, frames: int) -> None:
         write_request(run_dir, fresh)
 
 
-def reroll_state(run_dir: Path | str, state: str, provider: str = "codex",
+def reroll_state(run_dir: Path | str, state: str, provider: str = "higgsfield",
                  label: str | None = None) -> Path:
     """행 리롤 한 번: 테이크 raw 생성 + request takes 기록. 반환 = 테이크 raw 경로."""
     run_dir = Path(run_dir)
@@ -108,8 +108,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--run-dir", required=True)
     parser.add_argument("--state", required=True)
-    parser.add_argument("--provider", choices=PROVIDERS, default="codex",
-                        help="생성 백엔드 (기본 codex)")
+    parser.add_argument("--provider", choices=PROVIDERS, default="higgsfield",
+                        help="생성 백엔드 (기본 higgsfield)")
     parser.add_argument("--label", default=None, help="테이크 라벨 (기본 rerollN 자동 증가)")
     parser.add_argument("--extract", action="store_true",
                         help="기록 후 전체 배치 재추출까지 수행 (부분 추출은 팔레트 배치 결합 때문에 지원하지 않음)")

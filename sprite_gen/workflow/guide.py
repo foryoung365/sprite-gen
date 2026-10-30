@@ -6,7 +6,7 @@ import argparse
 import json
 from pathlib import Path
 
-from sprite_gen.gen import CODEX_UNAVAILABLE_SETTING, codex_unavailable_choice
+from sprite_gen.gen import CODEX_UNAVAILABLE_SETTING, codex_unavailable_choice, default_is_codex
 
 from .access import probe_access
 from .catalog import FIELDS, FLOWS, GENERAL_FIELDS, MOTION_METHODS, validate_choices
@@ -37,7 +37,7 @@ def guide(kind: str, *, stage: str = "start", base_image: Path | None = None, re
         for field in active_fields:
             if field not in selected:
                 questions.append({"field": field, **FIELDS[field]})
-        if codex_choice_source == "default":
+        if codex_choice_source == "default" and default_is_codex():
             questions.append({"field": CODEX_UNAVAILABLE_SETTING, **GENERAL_FIELDS[CODEX_UNAVAILABLE_SETTING],
                               "save": "general"})
         # Report both candidates while choosing, then only the services actually
@@ -61,6 +61,8 @@ def guide(kind: str, *, stage: str = "start", base_image: Path | None = None, re
                 if not confirm_api_billing and not any(q["field"] == "confirm_api_billing" for q in questions):
                     questions.append({"field": "confirm_api_billing", "question": f"{label} 호출에 별도 API 크레딧을 사용할까요?",
                                       "options": {"yes": "사용", "no": "구독 로그인으로 변경"}})
+            elif state.get("known"):
+                pass
             elif provider not in confirmed_access and not any(q["field"] == f"access_{provider}" for q in questions):
                 questions.append({"field": f"access_{provider}", "question": f"{label} 계정의 구독과 이미지/영상 이용 가능 여부를 확인해 주세요.",
                                   "options": {"yes": "사용 가능", "no": "사용 불가"}})

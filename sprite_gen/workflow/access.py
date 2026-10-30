@@ -2,7 +2,7 @@
 """Credential readiness is not proof of a paid subscription or remaining quota."""
 from __future__ import annotations
 
-from sprite_gen.gen import codex_provider
+from sprite_gen.gen import codex_provider, higgsfield
 from sprite_gen.gen.openai_provider import AUTH_ENV as OPENAI_AUTH_ENV
 from sprite_gen.gen.openai_provider import resolve_credential as resolve_openai_credential
 from sprite_gen.gen.xai import AUTH_SOURCE_API_KEY, resolve_credential
@@ -33,6 +33,19 @@ def probe_access(provider: str) -> dict:
                     "reason": f"{OPENAI_AUTH_ENV} is not set; export the key or choose another provider"}
         return {**result, "login": "ready", "billing": "api-credit",
                 "reason": f"OpenAI images will use {OPENAI_AUTH_ENV} and separate API credit; confirm this billing choice."}
+    if provider == "higgsfield":
+        # The CLI says who is signed in, on which plan and with how many credits left: all independently known.
+        try:
+            status = higgsfield.account()
+        except SystemExit as exc:
+            return {**result, "login": "unavailable", "reason": str(exc)}
+        if status is None:
+            return {**result, "login": "unavailable", "reason": f"higgsfield is not signed in; {higgsfield.LOGIN_HINT}"}
+        credits = status.get("credits")
+        return {**result, "login": "ready", "billing": "credits", "known": True,
+                "subscription": status.get("subscription_plan_type") or "unknown",
+                "quota": credits if isinstance(credits, (int, float)) else "unknown",
+                "reason": "Higgsfield jobs spend plan credits; each job states its price before it is created."}
     if provider != "grok":
         raise ValueError(f"unknown provider: {provider}")
     try:

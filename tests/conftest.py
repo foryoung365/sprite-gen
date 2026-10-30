@@ -246,6 +246,28 @@ def rife_runs(monkeypatch: pytest.MonkeyPatch) -> Callable[[], int]:
     return lambda: sum(r.calls for r in located)
 
 
+# This fork sends every paid route to Higgsfield by default (docs/higgsfield.md). The upstream tests pin upstream's
+# defaults (codex images, Grok clips, ElevenLabs sounds), so they run on those. Set here, before any test module
+# imports the engine, so the import-time default and every CLI a test runs as a child read them too. The Higgsfield
+# binary points at nothing: a test that reaches it fails instead of spending credits (2026-10-30: before this, a
+# run created seven real jobs through child CLIs that named no provider).
+os.environ["SPRITE_GEN_HARD_DEFAULT_PROVIDER"] = "codex"
+os.environ["SPRITE_GEN_VIDEO_PROVIDER"] = "grok"
+os.environ["SPRITE_GEN_SOUND_PROVIDER"] = "elevenlabs"
+os.environ["SPRITE_GEN_HIGGSFIELD_BIN"] = str(Path(__file__).resolve().parent / "no-higgsfield-binary-here")
+
+
+@pytest.fixture(autouse=True)
+def _fork_defaults(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """tests/gen/test_higgsfield.py tests the fork's own defaults (its CLI is a fake `subprocess.run`)."""
+    if request.node.path.name != "test_higgsfield.py":
+        return
+    from sprite_gen import gen
+    monkeypatch.setattr(gen, "HARD_DEFAULT_PROVIDER", "higgsfield")
+    monkeypatch.delenv("SPRITE_GEN_VIDEO_PROVIDER")
+    monkeypatch.delenv("SPRITE_GEN_SOUND_PROVIDER")
+
+
 @pytest.fixture(autouse=True)
 def own_settings(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
     """No test reads the saved preferences or the provider choices of the machine it runs on: what a call that
