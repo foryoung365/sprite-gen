@@ -21,7 +21,7 @@ from PIL import Image
 
 from sprite_gen.audio.manifest import load as load_sound
 from sprite_gen.audio.playback import player as audio_player
-from sprite_gen.frames.ui_kit import (REPORT_KIND as UI_KIT_KIND, STRETCHES, content_rect, element_path,
+from sprite_gen.frames.ui_kit import (REPORT_KIND as UI_KIT_KIND, SIDES, STRETCHES, content_rect, element_path,
                                      measure_insets)
 from sprite_gen._deps import np
 from sprite_gen.spec.assets import finite, load_asset, load_asset_states
@@ -32,7 +32,6 @@ from sprite_gen.util.console import utf8_streams
 MAX_PAGE_SIZE = 4096
 MAX_BYTES = 50_000_000
 SCENE_SECTIONS = ("images", "tiles", "ui")
-SIDES = ("left", "right", "top", "bottom")
 # A "base" footprint counts pixels at least this opaque (docs/game-pack.md "Version 2 request").
 FOOTPRINT_ALPHA = 128
 

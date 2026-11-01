@@ -14,6 +14,7 @@ import pytest
 from PIL import Image, ImageDraw
 
 from sprite_gen.compose import game_pack
+from sprite_gen.frames import ui_kit
 from sprite_gen.frames.ui_kit import measure_insets
 from sprite_gen.util.resample import resize_cell
 
@@ -113,6 +114,10 @@ def all_ints(value):
     if isinstance(value, list):
         return all(all_ints(v) for v in value)
     return type(value) is int
+
+
+def test_the_sides_of_a_nine_slice_are_the_ui_kit_s():
+    assert game_pack.SIDES is ui_kit.SIDES
 
 
 def test_version_2_manifest_has_exactly_the_documented_sections(tmp_path):

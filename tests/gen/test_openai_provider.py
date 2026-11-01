@@ -22,7 +22,7 @@ from http_answer import Answer
 from sprite_gen import gen
 from sprite_gen.gen import grok_provider as grok
 from sprite_gen.gen import openai_provider as openai
-from sprite_gen.gen import base, retry, xai
+from sprite_gen.gen import base, codex_provider, higgsfield_provider, retry, xai
 from sprite_gen.gen.base import GenRequest
 from sprite_gen.workflow import access
 from sprite_gen.workflow.catalog import FIELDS, GUIDED_PROVIDERS, PROVIDER_LABELS, validate_choices
@@ -330,6 +330,9 @@ def test_native_alpha_is_a_declared_capability(tmp_path, api):
 def test_provider_is_registered_everywhere_a_provider_must_be(api):
     assert "openai" in gen.PROVIDERS
     assert isinstance(gen._make_provider("openai", keep_session=False), openai.OpenAIProvider)
+    # Each adapter's name is its registered name, in the registry's order: a run's report says `provider` by it.
+    assert [codex_provider.CodexProvider.name, grok.GrokProvider.name, openai.OpenAIProvider.name,
+            higgsfield_provider.HiggsfieldProvider.name] == list(gen.PROVIDERS)
     # Every registered backend is labelled, so a new one can never be dropped from
     # the workflow surface by a silent positional zip.
     assert set(PROVIDER_LABELS) == set(gen.PROVIDERS)

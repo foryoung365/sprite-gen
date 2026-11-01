@@ -27,8 +27,8 @@ from typing import Any, Callable
 from PIL import Image
 
 from sprite_gen.spec.runio import atomic_write_text
-from sprite_gen.gen.base import (CodexUnavailableAsk, ask_codex_unavailable, child_asked, codex_unavailable_question,
-                                 run_logged)
+from sprite_gen.gen.base import (PROVIDER_HIGGSFIELD, CodexUnavailableAsk, ask_codex_unavailable, child_asked,
+                                 codex_unavailable_question, run_logged)
 from sprite_gen.gen.chroma import KEY_BACKGROUND_TEXT
 from sprite_gen.gen.facing import FACINGS, validate as validate_facing
 from sprite_gen.gen import handedness as handed_mod
@@ -39,12 +39,13 @@ from sprite_gen.video import canvas as canvas_mod
 from sprite_gen.video import frames as frames_mod
 from sprite_gen.video import loop as loop_mod
 from sprite_gen.video import held_fill as held_fill_mod
+from sprite_gen.video import local_cycle
 from sprite_gen.video import root_motion as root_motion_mod
 from sprite_gen.video import align as align_mod
 from sprite_gen.video import body_plan as body_mod
 from sprite_gen.video.body_plan import Body
 from sprite_gen.video import rife as rife_mod
-from sprite_gen.video import nonloop
+from sprite_gen.video import effect, nonloop
 from sprite_gen.video import play as play_mod
 from sprite_gen.util.console import utf8_streams
 
@@ -61,7 +62,7 @@ STATE_DURATION_SECONDS = {"attack": 2}
 # States whose clip is pinned to end on the frame it starts from (first-last mode): the model
 # has to come back to the still, which closes a one-shot action instead of leaving it wherever
 # the strike ended, and closes an idle without asking for a repeating rhythm.
-PIN_LAST_FRAME_STATES = frozenset({"attack", "idle", "effect"})
+PIN_LAST_FRAME_STATES = frozenset({"attack", "idle", effect.STATE})
 # Pinned states whose whole clip is the loop: it starts and ends on the canvas, so `video-loop
 # --cycle pinned` keeps every frame but the last (a re-render of the first). An attack asked
 # for once is ready stance -> strike -> ready stance, so its whole clip is one attack too.
@@ -188,7 +189,7 @@ HOLD_TEXT = {
 # What stays put while a caller's own walk or run moves, by view: in place, and facing the way the image
 # faces. A request interpreter may ask for any gait (a sneak, a march, a stroll); the engine keeps it on the
 # spot and turned the right way, as the built-in gait sentences do. `{facing}` is the side view's.
-GAIT_STATES = frozenset({"walk", "run"})
+GAIT_STATES = nonloop.GAIT_STATES
 GAIT_HOLD_TEXT = {
     "front": "It stays in place as if on a treadmill, without coming any closer, and keeps facing the viewer the whole time.",
     "back": (
@@ -367,6 +368,15 @@ def pins_last_frame(state: str, direction: str, play: str | None = None) -> bool
     if mode == play_mod.ONCE_HOLD:
         return False
     return state in PIN_LAST_FRAME_STATES or (state in GAIT_STATES and direction in PINNED_GAIT_VIEWS)
+
+
+def anchor_for(state: str, cut: str, anchor: str | None = None) -> str:
+    """The `video-loop --anchor` an item's loop is cut with: the request's (`anchor`, `--anchor`), else `motion-auto` for
+    a walk or run whose loop is searched (`cut`, `cycle_for`: `auto` or `periodic`) — the anchor that holds its size and
+    counts its steps before the cut (docs/video-pipeline.md, loop-repair.md section 4) — and `none` for any other item."""
+    if anchor is not None:
+        return anchor
+    return "motion-auto" if loop_mod.profile_for(state).gait and cut in ("auto", "periodic") else "none"
 
 
 def cycle_for(state: str, direction: str, play: str | None = None, *, pinned: bool | None = None) -> str:
@@ -553,7 +563,7 @@ def _lite_text(state: str, direction: str, model: str | None, *, built_in: bool,
     if body_mod.biped(body_plan):
         calm, head = LITE_WALK_TEXT, LITE_HEAD_TEXT
     else:
-        calm = LITE_WALK_TEXT_LEGLESS if any(b.plan == "legless" for b in body_plan or []) else LITE_WALK_TEXT_LEGGED
+        calm = LITE_WALK_TEXT_LEGLESS if any(b.plan == body_mod.LEGLESS for b in body_plan or []) else LITE_WALK_TEXT_LEGGED
         head = LITE_HEAD_TEXT_ANY_BODY
     text = f" {calm}" if built_in else ""
     if direction in head:
@@ -707,7 +717,7 @@ def run_item(
     gap: float,
     video_runner: Callable[..., int] = run_video_cli,
     shape: str | None = None,
-    anchor: str = "none",
+    anchor: str | None = None,
     spill: str = "auto",
     facing: str = "right",
     facing_fix: str = "none",
@@ -729,11 +739,12 @@ def run_item(
     meters_per_px: float | None = None,
 ) -> dict[str, Any]:
     """One (direction, state) item, canvas to loop. `play` is the request's play mode for it (`play.MODES`; None, the
-    state's preset) and `motion` the caller's own motion text in place of the state's sentence."""
+    state's preset) and `motion` the caller's own motion text in place of the state's sentence. `anchor` is the
+    request's `--anchor`; None cuts the loop with the item's own (`anchor_for`)."""
     mode = play_mod.resolve(state, play, prog="video-set")
     if end_frame is not None and mode != play_mod.ONCE_HOLD:
         raise SystemExit("video-set: --end-frame requires a once-hold item (a non-loop state, or --play once-hold)")
-    if mode == play_mod.ONCE_HOLD and (fit == "tight" or anchor != "none"):
+    if mode == play_mod.ONCE_HOLD and (fit == "tight" or anchor not in (None, "none")):
         raise SystemExit("video-set: non-loop states need --fit state and --anchor none to preserve the terminal pose")
     if walk_start not in WALK_START_MODES:
         raise SystemExit(f"video-set: --walk-start must be one of {', '.join(WALK_START_MODES)}")
@@ -814,7 +825,7 @@ def run_item(
                                                              vision=_facing_vision())
             # a lifetime is framed as an effect, whatever its name: on black, its centre kept. The view tells the
             # canvas whether a walk or run crosses the picture, whose still's room it reads (`canvas.gait_room`)
-            canvas_report = canvas_mod.run_canvas(still, canvas_png, state="effect" if lifetime else state, shape=shape, facing=facing if direction not in ("front", "back") else "right", headroom=None, lead=None, report_path=canvas_report_path, fit=fit, view=direction)
+            canvas_report = canvas_mod.run_canvas(still, canvas_png, state=effect.STATE if lifetime else state, shape=shape, facing=facing if direction not in ("front", "back") else "right", headroom=None, lead=None, report_path=canvas_report_path, fit=fit, view=direction)
             if facing_report is not None:
                 canvas_report["facing_check"] = facing_report
                 atomic_write_text(canvas_report_path, json.dumps(canvas_report, ensure_ascii=False, indent=2) + "\n")
@@ -865,9 +876,10 @@ def run_item(
         if decontam_note:
             # the set report lists it under `warnings`
             result["frames"]["decontam_warning"] = decontam_note
-        lp = loop_mod.run_loop(Path(fr["keyed_dir"]), item_dir / "loop", fps=float(fr["fps"]), state=state, min_len=None, max_len=None, n_out=None, seam_max=loop_mod.SEAM_RATIO_MAX, name=item, report_path=item_dir / "loop.report.json", anchor=anchor, body_height=body_height,
-                               cycle_mode=cycle_for(state, direction, play, pinned=pins),
-                               facing=facing if direction in handed_mod.LATERAL_VIEWS else "right",
+        cut = cycle_for(state, direction, play, pinned=pins)
+        lp = loop_mod.run_loop(Path(fr["keyed_dir"]), item_dir / "loop", fps=float(fr["fps"]), state=state, min_len=None, max_len=None, n_out=None, seam_max=loop_mod.SEAM_RATIO_MAX, name=item, report_path=item_dir / "loop.report.json", anchor=anchor_for(state, cut, anchor), body_height=body_height,
+                               cycle_mode=cut,
+                               facing=facing if direction in handed_mod.LATERAL_VIEWS else "right", view=direction,
                                fill_held=fill_held, out_fps=out_fps, air_retime=air_retime, meters_per_px=meters_per_px)
         result["loop"] = {"kind": lp["cycle"].get("kind", "periodic"), "cycle": lp["cycle"]["length"], "period": lp["cycle"]["period_global"], "cycle_ratio": round(lp["cycle"]["ratio"], 3), "seam_ratio": lp["resampled_seam_ratio"], "n_out": lp["n_out"], "drift_px": lp["strip"].get("drift_px", 0), "gif": lp["gif"]["file"], "webp": lp["webp"]["file"], "strip": lp["strip"]["path"]}
         result["loop"]["review_recommended"] = lp["cycle"].get("review_recommended", False)
@@ -880,11 +892,22 @@ def run_item(
         if "steps" in lp["cycle"]:
             # the cut's steps are known: its frame count is two steps — one cycle — not twice its siblings' one
             result["loop"]["steps"] = lp["cycle"]["steps"]["count"]
+        if local_cycle.unwitnessed(lp["cycle"]):
+            # its crossings may mark cycles, or its cut be one step, and nothing witnesses whether: it may hold half a
+            # cycle or two
+            result["loop"][local_cycle.UNWITNESSED] = True
+        if local_cycle.four_steps(lp["cycle"]):
+            # its cut holds four steps (its body or its feet say so): two cycles where its strip counts two steps — aligned as one
+            # cycle, it would play twice as fast
+            result["loop"][local_cycle.FOUR_STEPS] = True
         if (lp["cycle"].get("step_screen") or {}).get("suspect"):
             # the cut may be one step of a cycle twice as long (recorded, not cut again)
             result["loop"]["step_screen"] = {k: lp["cycle"]["step_screen"][k] for k in ("lag", "ratio", "depth", "coverage")}
         if lp.get("motion_anchor", {}).get("applied") is False:
             result["loop"]["motion_anchor"] = lp["motion_anchor"]
+        if lp.get("retake"):
+            # a take to film again (a part that pops at the wrap, a walk that starts or stops in the take), named
+            result["loop"]["retake"] = {k: lp["retake"][k] for k in ("reason", "reasons", "remedy")}
         # The cut's poses over its cells, its held runs as delivered, and what became of them (docs/loop-repair.md section 7).
         held = lp["held_fill"]
         result["loop"]["poses"] = held_fill_mod.said(held)
@@ -971,6 +994,25 @@ def _align_view(r: dict[str, Any]) -> str | None:
     return r["direction"] + (f"@{r['turned']}" if r["direction"] in handed_mod.LATERAL_VIEWS else "")
 
 
+def left_out_why(reasons: list[str], *, stands: bool = False, one_step: bool = False) -> str:
+    """Why `align_gaits` left a loop out of its state's alignment (`reasons`, as `left_out` keeps them), in words: a take
+    to film again (its retake reasons, `start-stop` among them; `stands` says why the walk is filmed again), a loop
+    whose cut nothing witnesses whole cycles (`cycle-unwitnessed`: crossings left on steps, or a cut the cut witness
+    held — half a cycle or two, whichever), and a loop cut two cycles long where its strip counts two steps
+    (`cycle-four-steps`). `one_step`, its step screen suspecting it is one step (`step_screen`), adds the count that
+    settles it, as an alignment that stops on such a loop says."""
+    retake = [r for r in reasons if r not in (local_cycle.UNWITNESSED, local_cycle.FOUR_STEPS)]
+    stood = ": the walk starts or stops in it" if stands and loop_mod.STAND_REASON in retake else ""
+    why = " and ".join([*([f"a take to film again ({', '.join(retake)}){stood}"] if retake else []),
+                        *([f"nothing witnesses its cut whole cycles ({local_cycle.UNWITNESSED}): it may hold half a cycle or two"]
+                          if local_cycle.UNWITNESSED in reasons else []),
+                        *([f"its body rises and falls, or its foot drawn nearer changes sides, four times in its cut "
+                           f"({local_cycle.FOUR_STEPS}): it holds two cycles "
+                           "where its strip counts two steps, and aligned as one cycle it would play twice as fast"]
+                          if local_cycle.FOUR_STEPS in reasons else [])])
+    return why + ("; its step screen says it may be one step (cut it again with video-loop --steps 1 if it is)" if one_step else "")
+
+
 def align_gaits(results: list[dict[str, Any]], root: Path, mode: str, *, interpolate: Any = None, between: str = align_mod.DEFAULT_BETWEEN,
                 feet: dict[str, str] | None = None) -> dict[str, Any]:
     """One cycle length per gait state across the set's directions (`video-cycle-align`,
@@ -980,6 +1022,16 @@ def align_gaits(results: list[dict[str, Any]], root: Path, mode: str, *, interpo
     saying why (`reason`) and a warning line naming what settles it: a frame is to be made and no
     RIFE is installed (`rife-not-installed`), or a loop may hold two or three cycles and nobody has
     counted them (`cycle-suspects`, the loops under `suspects`; `video-cycle-align --cycles`).
+    A loop whose take is to be filmed again because the walk starts or stops in it (`retake` reason
+    `start-stop`, loop.stand_retake) loops no two steps and has no cycle to match, a loop whose cut nothing
+    witnesses whole cycles (`cycle-unwitnessed`, local_cycle.unwitnessed: its crossings left on steps, or
+    its cut held by the cut witness) may hold half a cycle or two, and a loop cut four steps long (its body
+    rising and falling, or its foot drawn nearer changing sides, four times in it: `cycle-four-steps`,
+    local_cycle.four_steps) loops two where its strip counts two steps: each
+    is left out, its loop kept as cut, the rest aligned without it, and its state names it under
+    `left_out`, with its reasons — no loop is played at twice its speed, and no count of its cycles is
+    asked for. One left out whose step screen suspects it is one step (`step_screen`) is told in its
+    warning what settles that (`video-loop --steps 1`), as an alignment that stops on it would tell.
 
     `feet` maps an item to the own foot that lands on its loop's first strike (`--align-foot`,
     `video-cycle-align --foot`), handed to its state's alignment. A state that names loops whose foot
@@ -991,8 +1043,18 @@ def align_gaits(results: list[dict[str, Any]], root: Path, mode: str, *, interpo
     if mode == "off":
         return out
     by_state: dict[str, list[dict[str, Any]]] = {}
+    left_out: dict[str, dict[str, list[str]]] = {}
+    # a loop left out whose step screen suspects its cut is one step says what settles it, as the alignment would
+    stepped = {r["item"] for r in results if r.get("ok") and "step_screen" in r["loop"]}
     for r in results:
         if r.get("ok") and loop_mod.profile_for(r["state"]).gait:
+            reasons = (r["loop"].get("retake") or {}).get("reasons") or []
+            why = [*(reasons if loop_mod.STAND_REASON in reasons else []),
+                   *([local_cycle.UNWITNESSED] if r["loop"].get(local_cycle.UNWITNESSED) else []),
+                   *([local_cycle.FOUR_STEPS] if r["loop"].get(local_cycle.FOUR_STEPS) else [])]
+            if why:
+                left_out.setdefault(r["state"], {})[r["item"]] = why
+                continue
             by_state.setdefault(r["state"], []).append(r)
     for state, rows in by_state.items():
         if len(rows) < 2:
@@ -1037,6 +1099,11 @@ def align_gaits(results: list[dict[str, Any]], root: Path, mode: str, *, interpo
             r["loop"]["cycle_align"] = {k: row[k] for k in ("from", "to", "made_by_rife", "turned_by", "turned_on", "start_foot", "start_foot_source",
                                                             "seam_ratio", "retake")}
             r["loop"]["n_out"] = row["strip"]["frames"]
+    for state, items in left_out.items():
+        out.setdefault(state, {"ok": True, "applied": False, "why": "fewer than two directions left to align"})["left_out"] = items
+        for item, reasons in items.items():
+            print(f"video-set: warning: {state}: {item} left out of the cycle alignment — "
+                  f"{left_out_why(reasons, stands=True, one_step=item in stepped)}, and its loop is kept as cut", file=sys.stderr)
     # a foot told for an item no alignment took (its state not aligned, or the item failed) is never dropped quietly
     for state, told_items in asked.items():
         if told_items and not out[state].get("applied"):
@@ -1045,7 +1112,10 @@ def align_gaits(results: list[dict[str, Any]], root: Path, mode: str, *, interpo
         r = next((r for r in results if r["item"] == item), None)
         if r is None:
             raise SystemExit(f"video-set: --align-foot {item}={foot} names no item of the set")
-        why = f"{item} failed" if not r.get("ok") else f"{r['state']} was not aligned (filmed in fewer than two directions)"
+        why = (f"{item} failed" if not r.get("ok") else
+               f"{item} was left out of the alignment, {left_out_why(left_out[r['state']][item], one_step=item in stepped)}"
+               if item in left_out.get(r["state"], {}) else
+               f"{r['state']} was not aligned (filmed in fewer than two directions)")
         out.setdefault(r["state"], {"ok": True, "applied": False, "why": why}).setdefault("feet_unused", {})[item] = foot
     for state, a in out.items():
         if a.get("feet_unused"):
@@ -1069,6 +1139,8 @@ def write_table(results: list[dict[str, Any]], path: Path, *, both: bool = False
                 status = "OK (uncorrected; review gait)"
             if "jump_repair" in lp:
                 status += " (jump not repaired: no RIFE)"
+            if lp.get("retake"):
+                status += f" (film again: {', '.join(lp['retake']['reasons'])})"
             # a cut whose steps are known is two of them; one the step screen suspects may be one
             cycle = f"{lp['cycle']}" + (f" ({lp['steps']} steps)" if lp.get("steps") else " (one step?)" if lp.get("step_screen") else "")
             lines.append(f"| {_view_label(r, both)} | {r['state']} | {lp.get('kind', 'periodic')} | {cycle} | {lp['period'] if lp['period'] is not None else '-'} | {format(lp['seam_ratio'], '.2f') if lp['seam_ratio'] is not None else '-'} | {lp['n_out']} | {status} |")
@@ -1093,7 +1165,7 @@ def run_set(
     gap: float,
     video_runner: Callable[..., int] = run_video_cli,
     shape: str | None = None,
-    anchor: str = "none",
+    anchor: str | None = None,
     spill: str = "auto",
     facing: str = "right",
     facing_fix: str = "none",
@@ -1153,7 +1225,7 @@ def run_set(
     for item, path in (end_frames or {}).items():
         if item not in modes or modes[item] != play_mod.ONCE_HOLD or not path.is_file():
             raise SystemExit(f"video-set: --end-frame {item} needs a non-loop item (a once-hold) and an existing image")
-    if play_mod.ONCE_HOLD in modes.values() and (fit == "tight" or anchor != "none"):
+    if play_mod.ONCE_HOLD in modes.values() and (fit == "tight" or anchor not in (None, "none")):
         raise SystemExit("video-set: non-loop states need --fit state and --anchor none")
     aligned_items = [i for i, _, s, _, _ in items if align_cycles == "auto" and loop_mod.profile_for(s).gait
                      and sum(1 for _, _, s2, _, _ in items if s2 == s) >= 2]
@@ -1216,6 +1288,12 @@ def run_set(
     warnings += [f"cycle-align:{st}: {line}" for st, a in aligned.items() for line in a.get("warnings", [])]
     warnings += [f"{r['item']}: {r['frames']['decontam_warning']}" for r in results
                  if r.get("ok") and "decontam_warning" in r.get("frames", {})]
+    # A take to film again its loop named (`retake`) — never a failure, never silent — and one the alignment left out.
+    warnings += [f"{r['item']}: film this direction again ({', '.join(r['loop']['retake']['reasons'])}) — {r['dir']}/loop.report.json `retake`"
+                 for r in results if r.get("ok") and r["loop"].get("retake")]
+    stepped = {r["item"] for r in results if r.get("ok") and "step_screen" in r["loop"]}
+    warnings += [f"cycle-align:{st}: {item} left out — {left_out_why(reasons, one_step=item in stepped)}, its loop kept as cut"
+                 for st, a in aligned.items() for item, reasons in a.get("left_out", {}).items()]
     warnings += [f"cycle-align:{st}: --align-foot {item}={foot} not applied ({a.get('why') or a.get('error') or 'the item failed'})"
                  for st, a in aligned.items() for item, foot in a.get("feet_unused", {}).items()]
     # A start still `gen` asked about instead of drawing (codex cannot run, and the choice is to ask): the set ends
@@ -1287,7 +1365,7 @@ def _facing_vision():
     """Who looks at a side view's facing: the clip provider's own check (higgsfield's on the Claude subscription),
     or None for Grok's."""
     from sprite_gen.gen import higgsfield_video
-    if higgsfield_video.video_provider() == "higgsfield":
+    if higgsfield_video.video_provider() == PROVIDER_HIGGSFIELD:
         from sprite_gen.gen.higgsfield_provider import HiggsfieldProvider
         return HiggsfieldProvider()
     return None
@@ -1318,11 +1396,11 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--character", help="short subject phrase used in the prompts (e.g. 'The armored knight')")
     parser.add_argument("--duration", type=int, default=None, help=f"seconds per clip for every state (default: {DEFAULT_DURATION_SECONDS}, attack {STATE_DURATION_SECONDS['attack']}); a repeating motion holds enough cycles at 3 s and a longer clip only costs more (2026-09-18)")
     parser.add_argument("--resolution", default="720p")
-    parser.add_argument("--key", choices=("auto", "green", "magenta", "white"), default="auto")
+    parser.add_argument("--key", choices=canvas_mod.KEYS, default="auto")
     parser.add_argument("--concurrency", type=int, default=3, help="parallel clip generations (starts are staggered regardless)")
     parser.add_argument("--start-gap", type=float, default=START_GAP_SECONDS, help="seconds between clip request starts")
     parser.add_argument("--shape", choices=canvas_mod.SHAPES, help="force one canvas shape for every state (e.g. wide for a costume or arms that leave a 1:1 frame; square keeps a side walk or run square whatever room its still leaves)")
-    parser.add_argument("--anchor", choices=tuple(a for a in loop_mod.ANCHOR_MODES if a != "motion"), default="none", help="motion-auto: automatic regions, local period and XY correction (walk/run only); feet: remove in-canvas drift")
+    parser.add_argument("--anchor", choices=tuple(a for a in loop_mod.ANCHOR_MODES if a != "motion"), default=None, help="default: motion-auto for a walk or run whose loop is searched, none for every other state; motion-auto: automatic regions, local period and XY correction (walk/run only); feet: remove in-canvas drift")
     parser.add_argument("--spill", choices=frames_mod.SPILL_MODES, default="auto", help="auto: judge key reflections from each item's canvas still (default); small / full: force")
     parser.add_argument("--fit", choices=canvas_mod.FITS, default="state", help="state: each state's room for the motion (default); tight: no room, the subject fills the frame and a motion that leaves it is clipped (use with --body-height at a low --resolution)")
     parser.add_argument("--body-height", type=int, default=None, help="scale every state's loop so the standing height is this many px (video-loop --body-height): one value for the whole set keeps the character the same size across states")
@@ -1365,7 +1443,7 @@ def run(**kwargs: object) -> int:
         duration=(int(kwargs["duration"]) if kwargs.get("duration") else None), resolution=str(kwargs.get("resolution") or "720p"), key=str(kwargs.get("key") or "auto"),
         concurrency=int(kwargs.get("concurrency") or 3), force=bool(kwargs.get("force")), gap=float(kwargs.get("start_gap") or START_GAP_SECONDS),
         facing=str(kwargs.get("facing") or "right"), facing_fix=str(kwargs.get("facing_fix") or "none"),
-        shape=(str(kwargs["shape"]) if kwargs.get("shape") else None), anchor=str(kwargs.get("anchor") or "none"), spill=str(kwargs.get("spill") or "auto"),
+        shape=(str(kwargs["shape"]) if kwargs.get("shape") else None), anchor=(str(kwargs["anchor"]) if kwargs.get("anchor") else None), spill=str(kwargs.get("spill") or "auto"),
         body_height=(int(kwargs["body_height"]) if kwargs.get("body_height") else None), fit=str(kwargs.get("fit") or "state"),
         decontam=str(kwargs.get("decontam") or frames_mod.DECONTAM_DEFAULT), align_cycles=str(kwargs.get("align_cycles") or "auto"),
         align_between=str(kwargs.get("align_between") or align_mod.DEFAULT_BETWEEN),

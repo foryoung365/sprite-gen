@@ -10,6 +10,11 @@ import re
 
 from sprite_gen.audio import playback, processing
 
+# A sound bundle's kind and its audio kinds, each written once: `sound` writes them into sound.json and offers
+# the audio kinds as --kind, `load` reads them back, `provider` asks ElevenLabs for one.
+KIND = 'sprite-gen-sound'
+SFX, BGM = AUDIO_KINDS = ('sfx', 'bgm')
+
 
 def event_name(value):
     if not isinstance(value, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}', value):
@@ -26,9 +31,9 @@ def _number(value, name, low, high):
 def load(path, max_bytes):
     path = Path(path).resolve()
     value = json.loads(path.read_text())
-    if not isinstance(value, dict) or value.get('kind') != 'sprite-gen-sound' or value.get('version') != playback.VERSION:
+    if not isinstance(value, dict) or value.get('kind') != KIND or value.get('version') != playback.VERSION:
         raise ValueError('audio source must be a sprite-gen-sound version 2 manifest')
-    if value.get('audio_kind') not in ('sfx', 'bgm') or type(value.get('loop')) is not bool:
+    if value.get('audio_kind') not in AUDIO_KINDS or type(value.get('loop')) is not bool:
         raise ValueError('invalid audio kind or loop flag')
     frames = playback.validate(value.get('playback'), value['loop'])
     duration = playback.duration(frames)

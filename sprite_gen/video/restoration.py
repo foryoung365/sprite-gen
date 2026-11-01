@@ -51,7 +51,8 @@ KIND = "sprite-gen-video-loop-restoration"
 REPAIR_SCHEMA = 4
 COMPARISON_SCHEMA = 6
 MAX_PROPOSALS = 3
-ARTIFACTS = ("strip", "meta", "report", "gif", "webp")
+ARTIFACT_SUFFIXES = {"strip": ".strip.png", "meta": ".strip.json", "report": ".loop.json", "gif": ".gif", "webp": ".webp"}
+ARTIFACTS = tuple(ARTIFACT_SUFFIXES)
 LISTED = 256  # capped or protected pixels a report spells out; the masks always hold all of them
 
 # The guard in whole numbers is the same formula only while the bar is a whole number.
@@ -98,7 +99,7 @@ def key_weight(rgba: Any, key: str) -> Any:
 
 def _jump_facing(origin: Loop) -> str | None:
     """The facing the jump repair read the origin's frames with, as its record says; None when it names none."""
-    from sprite_gen.video.loop import FACINGS
+    from sprite_gen.gen.facing import FACINGS
     facing = (origin.source_report.get("jump_repair") or {}).get("facing")
     return facing if facing in FACINGS else None
 
@@ -107,7 +108,7 @@ def _source_key(src: source.Source) -> str | None:
     key = src.record["recipe"].get("key")
     if key == "auto":
         key = (src.record["recipe"].get("spill") or {}).get("key")
-    return key if key in ("green", "magenta") else None
+    return key if isinstance(key, str) and key in KEY_TARGETS else None
 
 
 def source_key_weight(cropped: Image.Image, size: tuple[int, int], key: str) -> Any:
@@ -516,8 +517,7 @@ def _write_candidate(paths: dict[str, Path], out: Path, name: str, baseline: Loo
         raise ValueError("name must be a filename stem")
     out.parent.mkdir(parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix=".restoration-", dir=out.parent))
-    names = {k: name + suffix for k, suffix in (("strip", ".strip.png"), ("meta", ".strip.json"),
-                                               ("report", ".loop.json"), ("gif", ".gif"), ("webp", ".webp"))}
+    names = {k: name + suffix for k, suffix in ARTIFACT_SUFFIXES.items()}
     try:
         if target is None:
             for key, filename in names.items():
@@ -614,7 +614,7 @@ def run(**kwargs: Any) -> int:
                         **{"--" + k.replace("_", "-"): p for k, p in inputs.items()},
                         **{f"{p.name} in --source-frames-dir": p for p in inputs["source_frames_dir"].glob("*.png")}},
                        {"--report": output}, verb="video-loop-repair")
-        if output.resolve() in {(out / (name + ext)).resolve() for ext in (".strip.png", ".strip.json", ".loop.json", ".gif", ".webp")}:
+        if output.resolve() in {(out / (name + ext)).resolve() for ext in ARTIFACT_SUFFIXES.values()}:
             raise ValueError("repair report cannot overwrite the candidate it writes")
         payload = restore(paths, origin, source.Source.read(**inputs), out_dir=out,
                           name=name, proposal_index=kwargs.get("proposal_index", 1))

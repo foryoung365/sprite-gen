@@ -15,7 +15,7 @@ from sprite_gen.util.cli_kwargs import namespace_from_kwargs
 from sprite_gen.effects.breathe import anatomy_report, fit_breathe_pattern, phase_frame, resolve_anatomy
 from sprite_gen.curate.curation import apply_pixel_edits, apply_transform, edit_index, frame_variant, load_curation, pixel_snap_scale, source_frame_index, state_breathe, state_pixel_ops, state_plan
 from sprite_gen.spec.layout import row_frame_rel, state_frame_total
-from sprite_gen.frames.extract import heal_run, require_frames_manifest
+from sprite_gen.frames.extract import HEAL_HEALED, HEAL_NOTES, heal_run, require_frames_manifest
 from sprite_gen.spec.runio import acquire_run_dir_lock, atomic_save_image, atomic_write_text, load_request
 from sprite_gen.spec.subject import default_min_used_pixels
 from sprite_gen.util.console import utf8_streams
@@ -51,10 +51,10 @@ def _run(args: argparse.Namespace):
     # 소비 전 파생 캐시 자가치유 (실시간 계약): 합성이 굽는 것 = 항상 현재 엔진의
     # 프레임. heal 은 서브프로세스 추출로 락을 따로 잡으므로 compose 락 획득 전에.
     heal_report = heal_run(run_dir)
-    for note in heal_report["notes"]:
+    for note in heal_report[HEAL_NOTES]:
         print(f"[heal] {note}", file=sys.stderr)
-    if heal_report["healed"]:
-        print(f"[heal] re-derived stale rows: {', '.join(heal_report['healed'])}", file=sys.stderr)
+    if heal_report[HEAL_HEALED]:
+        print(f"[heal] re-derived stale rows: {', '.join(heal_report[HEAL_HEALED])}", file=sys.stderr)
     acquire_run_dir_lock(run_dir, "compose_sprite_atlas")
     request = load_request(run_dir)
     if args.min_used_pixels is None:

@@ -8,6 +8,7 @@ from typing import Any, Callable
 from PIL import Image
 
 from sprite_gen._deps import np
+from sprite_gen.video.body_plan import LEGLESS, QUADRUPED
 
 # Cuts played once: `once` ends held on its terminal pose, `lifetime` on an empty frame, `once-return` back on its
 # first pose (a clip pinned to end on its first frame, kept whole, `loop.once_return_cycle`).
@@ -32,13 +33,15 @@ MOTION_TEXT = {'death': 'collapses directly onto the ground, settles into a comp
               'returning to the starting form.'}
 STATES = frozenset(MOTION_TEXT)
 COMMON_TEXT = 'Each action is executed exactly once without looping or returning to the initial state, holding the final pose completely motionless for the final 0.4 seconds, keeping the full body and any props entirely inside the frame under a fixed camera against a flat pure chroma background with no shadows, particles, visual effects, or smears, while preserving the original art style and permitting changes to character design and proportions solely for the transform action.'
-ANATOMY_TEXT = {'quadruped': 'Preserve quadruped anatomical structure without requiring an upright or standing stance, '
+ANATOMY_TEXT = {QUADRUPED: 'Preserve quadruped anatomical structure without requiring an upright or standing stance, '
               'allowing natural weight transfer, crouching, and full ground collapse during death or '
               'falls without requiring all four limbs to touch the ground on every frame.',
- 'legless': 'Preserve continuous limbless anatomy without forcing an upright orientation, allowing '
+ LEGLESS: 'Preserve continuous limbless anatomy without forcing an upright orientation, allowing '
             'undulating, coiled, or fully flattened ground configurations during death or falls without '
             'introducing limbs.'}
 CYCLIC_STATES = frozenset({"idle", "walk", "run", "talk", "blink", "breathe"})
+# The gaits among them: a walk or run, filmed in place (`batch`) and checked for a far limb in view (`qa.handed`).
+GAIT_STATES = frozenset({"walk", "run"})
 STABLE_SECONDS = 0.2
 STABLE_MAX = 0.025  # distance / visible subject mass, independent of canvas padding
 POSE_SHAPE_TOLERANCE = 0.05

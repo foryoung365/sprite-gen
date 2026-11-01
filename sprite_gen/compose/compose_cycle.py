@@ -17,7 +17,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 from sprite_gen.util.cli_kwargs import namespace_from_kwargs
-from sprite_gen.curate.curation import apply_pixel_edits, apply_transform, frame_variant, load_curation, pixel_snap_scale, source_frame_index, state_pixel_ops, state_plan
+from sprite_gen.curate.curation import CURATION_FILENAME, apply_pixel_edits, apply_transform, frame_variant, load_curation, pixel_snap_scale, source_frame_index, state_pixel_ops, state_plan
 from sprite_gen.spec.layout import row_frame_rel, state_frame_total
 from sprite_gen.frames.extract import require_frames_manifest
 from sprite_gen.qa.preview import flatten
@@ -154,7 +154,7 @@ def _run_guarded(args, run_dir):
         "name": args.name,
         "selected_user_frames": user_frames,
         "selected_zero_based_frames": [frame - 1 for frame in user_frames],
-        "selection_source": "explicit-frames" if args.frames is not None else "curation.json",
+        "selection_source": "explicit-frames" if args.frames is not None else CURATION_FILENAME,
         "transforms_applied": {str(n - 1): transforms[n - 1] for n in user_frames if (n - 1) in transforms},
         "duration_ms": duration_ms,
         "delay_ticks": round(duration_ms / 10),

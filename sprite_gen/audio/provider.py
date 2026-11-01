@@ -16,6 +16,7 @@ import re
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+from sprite_gen.audio.manifest import AUDIO_KINDS, SFX
 from sprite_gen.gen import address, retry
 from sprite_gen.gen.base import announce_api_billing, env_api_key
 from sprite_gen.gen.xai import error_body, NO_ANSWER
@@ -26,7 +27,7 @@ PROVIDERS = ('higgsfield', 'elevenlabs')
 HIGGSFIELD_JOBS = {'sfx': 'mirelo_text_to_audio', 'bgm': 'sonilo_music'}
 HIGGSFIELD_TIMEOUT_SECONDS = 900
 FORMAT = 'mp3_44100_128'
-SAFE_CODES = frozenset({'system_busy', 'too_many_concurrent_requests', 'quota_exceeded',
+SAFE_CODES = frozenset({*retry.ELEVENLABS_BUSY, 'quota_exceeded',
     'invalid_api_key', 'missing_permissions', 'bad_prompt', 'bad_composition_plan',
     'content_policy_violation', 'unauthorized', 'invalid_request'})
 
@@ -39,12 +40,12 @@ def sound_provider():
 
 
 def request(kind, prompt, duration, loop):
-    if kind not in ('sfx', 'bgm'):
+    if kind not in AUDIO_KINDS:
         raise ValueError('kind must be sfx or bgm')
     if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 4100:
         raise ValueError('prompt requires 1 to 4100 characters')
     duration = float(duration)
-    low, high = (0.5, 30) if kind == 'sfx' else (3, 600)
+    low, high = (0.5, 30) if kind == SFX else (3, 600)
     if not math.isfinite(duration) or not low <= duration <= high:
         raise ValueError(f'{kind} duration must be between {low} and {high} seconds')
     if type(loop) is not bool:
@@ -53,10 +54,10 @@ def request(kind, prompt, duration, loop):
         return {'provider': 'higgsfield', 'job_type': HIGGSFIELD_JOBS[kind],
                 'params': {'prompt': prompt, 'duration': duration}, 'loop': loop}
     body = ({'text': prompt, 'duration_seconds': duration, 'loop': loop,
-             'model_id': 'eleven_text_to_sound_v2', 'prompt_influence': 0.3} if kind == 'sfx'
+             'model_id': 'eleven_text_to_sound_v2', 'prompt_influence': 0.3} if kind == SFX
             else {'prompt': prompt, 'music_length_ms': round(duration * 1000),
                   'model_id': 'music_v1', 'force_instrumental': True})
-    return {'endpoint': 'sound-generation' if kind == 'sfx' else 'music',
+    return {'endpoint': 'sound-generation' if kind == SFX else 'music',
             'output_format': FORMAT, 'body': body}
 
 
@@ -101,7 +102,7 @@ def generate(document):
     if document.get('provider') == 'higgsfield':
         return _higgsfield(document)
     key = credential()
-    req = Request(address.url('elevenlabs', f"/{document['endpoint']}?output_format={document['output_format']}"),
+    req = Request(address.url(address.ELEVENLABS, f"/{document['endpoint']}?output_format={document['output_format']}"),
                   data=json.dumps(document['body']).encode(),
                   headers={'xi-api-key': key, 'Content-Type': 'application/json'}, method='POST')
 
@@ -121,12 +122,12 @@ def generate(document):
 
     announce_api_billing('elevenlabs', AUTH_ENV, f" ({document['endpoint']}; the audio is cached, so the same "
                          "request is not bought twice).")
-    status, body, headers, asks = retry.ask(send, provider='elevenlabs', who='ElevenLabs', label='sound', kind=_code)
+    status, body, headers, asks = retry.ask(send, provider=address.ELEVENLABS, who='ElevenLabs', label='sound', kind=_code)
     if not 200 <= status < 300:
         raise ValueError(f'ElevenLabs refused sound (HTTP {status}, {_code(body) or "unclassified"}); {retry.tail(asks)}')
     if not isinstance(body, bytes) or not body:
         raise ValueError('ElevenLabs returned no audio; request outcome unresolved')
-    meta = {'provider': 'elevenlabs', 'auth_source': AUTH_ENV, 'model': document['body']['model_id'], 'asks': asks}
+    meta = {'provider': address.ELEVENLABS, 'auth_source': AUTH_ENV, 'model': document['body']['model_id'], 'asks': asks}
     # Only documented, constrained metadata; provider prose never enters a report or log.
     for header, field in (('request-id', 'request_id'), ('song-id', 'song_id')):
         value = headers.get(header, '')

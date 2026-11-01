@@ -97,6 +97,8 @@ def test_types_defaults_and_flags_are_written_as_json() -> None:
     assert inputs == {"name": "inputs", "positional": True, "type": "path", "nargs": "*"}
     sound = {arg["name"]: arg for arg in _document()["verbs"]["sound"]["args"]}
     assert sound["--loop"] == {"name": "--loop", "aliases": ["--no-loop"], "type": "flag"}
+    video, video_prompt = ({arg["name"]: arg for arg in _document()["verbs"][verb]["args"]} for verb in ("video", "video-prompt"))
+    assert video["--model"]["default"] == video_prompt["--model"]["default"] == "grok-imagine-video-1.5"
     assert _document()["verbs"]["sound"]["exclusive"] == [{"one_of": ["--prompt", "--prompt-file"], "required": True}]
     rife = _document()["verbs"]["rife"]
     assert rife["args"] == [] and list(rife["commands"]) == ["install"]

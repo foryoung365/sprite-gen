@@ -45,6 +45,7 @@ from typing import Any
 from PIL import Image
 
 from sprite_gen._deps import np
+from sprite_gen.gen import handedness as handed_mod
 from sprite_gen.spec.runio import atomic_write_text, new_stage, refuse_overlap
 from sprite_gen.util.gif_utils import save_clean_gif
 from sprite_gen.util.resample import resize_cell
@@ -87,6 +88,10 @@ PERIODICITY_MIN = 0.15  # the period must dip at least 15% below the profile mea
 # Where a size hold or the gait fallback writes the frames it scaled back: a folder of the run's own in the out dir,
 # `.gait-fallback-frames.<pid>-<random>` (`_Scratch`), removed however the run ends.
 FALLBACK_FRAMES = "gait-fallback-frames"
+# What a video-loop report is (its `kind`), and the `status` of one whose cut was handed over: align, compare and
+# source read a report as a delivered loop's only when it says both.
+REPORT_KIND = "sprite-gen-video-loop-report"
+REPORT_PASSED = "passed"
 GIF_FPS_DEFAULT = 24.0  # GIF/WebP playback density = the source rate: every cycle frame is kept, a fast action never looks slow (12 made a jump read sluggish, 2026-09-09)
 GIF_FRAMES_MIN = 4
 ONE_SHOT_MIN_CONTRAST = 3.0  # one-shot: the excursion peak must stand this far above the rest-pose noise (in MADs)
@@ -97,6 +102,7 @@ ONE_SHOT_MIN_MOVED = 0.4
 ONE_SHOT_MIN_COHERENCE = 3.0  # departure must exceed three ordinary playback steps
 ONE_SHOT_MIN_ACTIVE = 4  # isolated keying/jitter spikes are not a performed action
 ONE_SHOT_PAD = 2  # one-shot: rest frames kept on each side of the excursion so the seam is rest -> rest
+ONE_SHOT_RETURN_MAX = 0.25  # one-shot: the return pair comes back to within a quarter of its departure
 CYCLE_MODES = ("auto", "periodic", "one-shot", "fixed", "pinned", *nonloop.KINDS)
 # --cycle pinned: the clip was asked to end on its first frame (first-last mode). A re-rendered
 # first frame is never byte-identical to its source; on the analysis thumbnail (mean absolute
@@ -143,7 +149,6 @@ OVERLAP_WRAP_OFF = "turned off (--overlap-wrap off)"
 # warn: a warning line, the loop kept; refuse: the loop fails.
 UNFIXED_MODES = ("warn", "refuse")
 SIZE_HOLD_MODES = ("auto", "off")
-FACINGS = ("right", "left")
 # Where `video-cycle-align` keeps the cut as filmed (sprite_gen/video/align.py). A new cut makes
 # the kept one stale, so writing the cycle removes it: an alignment after a re-cut (say, once RIFE
 # is installed and the jumps are repaired) reads the new cut, not the old one.
@@ -157,6 +162,18 @@ FOLLOW_SOURCE = "follow.source.png"
 CYCLE_REFUSED_DIR = "cycle.refused"
 SWAY_RECORD = "follow"
 SWAY_RECORD_KEYS = ("sway", "follow")
+# The strip's record of each of its cells, in its `<name>.strip.json` and bound to it by its PNG's sha256 (`strip_sha256`):
+# per cell the source frame it is, where the anchor moved that frame before the crop (`anchor_move_px`, across and down),
+# the factor each step that holds a clip's frames to one size scaled it by about its feet before the cut (`scale`; 1
+# where the step did not hold them), and whether it is that frame as filmed but for that move (`as_filmed`: its pixels at
+# the end of the cut are its pixels anchored, before any repair, and nothing held the clip's frames). `video-sway
+# --read-on-cut` pairs two cuts of one clip by it alone. An alignment does not carry it over to the strip it makes; it
+# keeps the cut's own strip record beside the cut's frames (`cycle.source/<name>.strip.json`).
+CELL_RECORD = "cell_record"
+CELL_SCALE_STEPS = {"size_hold": "the size hold", "gait_fallback": "the gait fallback"}  # each, in words
+# How the frames of a cut at --anchor motion or motion-auto are made before any repair, as their receipt names it
+# (`source_projection.recipe`; a cut at --anchor none or body is made by `source.RECIPE`): laid by the correction.
+MOTION_RECIPE = "motion-anchor-correction-v1"
 
 
 def sway_recorded(meta: dict) -> bool:
@@ -500,14 +517,18 @@ def detect_one_shot(D: np.ndarray, *, min_len: int, max_len: int, frame_mass: np
     active component to have observed rest on BOTH sides. A clipped component
     at frame zero or n-1 is never repaired by padding. The existing contrast /
     moved-mass floors still reject stand jitter; return distance must additionally
-    be at most a quarter of the departure. No seam threshold is relaxed.
+    be at most a quarter of the departure (ONE_SHOT_RETURN_MAX). No seam threshold is relaxed.
     No cut is shorter than `min_len` (nor ONE_SHOT_MIN_LEN) or longer than `max_len`; `run_loop`
     passes ONE_SHOT_MIN_LEN unless the caller set --min-len (`CutWindow`).
+
+    Where no pair returns, the refusal names the closest return (`closest_return`: the pair, its return over its
+    departure, its moved), not the moved of the returned pairs, of which there are none.
     """
     n = len(D)
     adjacent = np.diag(D, 1)
     candidates = []
     max_moved = 0.0
+    closest: dict[str, Any] | None = None
     shortest = max(ONE_SHOT_MIN_LEN, min_len)
     for start in range(n - ONE_SHOT_MIN_LEN + 1):
         for end in range(start + shortest - 1, min(n, start + max_len)):
@@ -516,13 +537,18 @@ def detect_one_shot(D: np.ndarray, *, min_len: int, max_len: int, frame_mass: np
             peak_at = start + int(np.argmax(e[start:end + 1]))
             peak = float(e[peak_at])
             departure = peak - seam / 2
-            if departure <= 0 or seam > departure * 0.25:
+            if departure <= 0:
+                continue
+            mass = float((frame_mass[start] + frame_mass[end]) / 2) if frame_mass is not None else 0
+            moved = departure / mass if mass > 0 else None
+            if closest is None or seam / departure < closest["ratio"]:
+                closest = {"pair": [start, end], "ratio": seam / departure, "seam": seam, "departure": departure,
+                           "moved": moved}
+            if seam > departure * ONE_SHOT_RETURN_MAX:
                 continue
             med = float(np.median(e))
             mad = float(np.median(np.abs(e - med))) or 1e-6
             contrast = (peak - med) / mad
-            mass = float((frame_mass[start] + frame_mass[end]) / 2) if frame_mass is not None else 0
-            moved = departure / mass if mass > 0 else None
             max_moved = max(max_moved, moved or 0)
             if contrast >= ONE_SHOT_MIN_CONTRAST:
                 rule = "contrast"
@@ -560,11 +586,18 @@ def detect_one_shot(D: np.ndarray, *, min_len: int, max_len: int, frame_mass: np
                 "excursion_rule": rule, "departure": departure,
             })
     if not candidates:
+        if closest is not None and closest["ratio"] > ONE_SHOT_RETURN_MAX:
+            # No pair returns: the condition failed is the return, said on the pair that came closest.
+            a, b = closest["pair"]
+            said = (f"the clip does not come back to a pose it left: the closest return, frames {a}-{b}, is "
+                    f"{closest['ratio']:.2f} of its departure away, over {ONE_SHOT_RETURN_MAX}"
+                    + (f" (moved {closest['moved']:.2f}, need {ONE_SHOT_MIN_MOVED})" if closest["moved"] is not None else ""))
+        else:
+            said = (f"the clip never leaves its rest pose and returns with observed endpoints (moved {max_moved:.2f}, "
+                    f"need {ONE_SHOT_MIN_MOVED})")
         raise CycleSelectionError(
-            f"video-loop: no complete one-shot return — the clip never leaves its rest pose "
-            f"and returns with observed endpoints (moved {max_moved:.2f}, "
-            f"need {ONE_SHOT_MIN_MOVED})",
-            {"kind": "one-shot", "candidates": []},
+            f"video-loop: no complete one-shot return — {said}",
+            {"kind": "one-shot", "candidates": [], **({"closest_return": closest} if closest is not None else {})},
         )
     # Keep the full strongest action, then minimise excess rest. Do not choose a
     # tiny low-seam twitch just because its endpoints happen to match exactly.
@@ -708,14 +741,19 @@ def body_wrap_offset(frames: list[Image.Image], *, band: float = BODY_ANCHOR_BAN
     return min(range(-search, search + 1), key=cost)
 
 
+def ramp_offset(wrap_dx: int, k: int, length: int) -> int:
+    """How far across the ramp of a cycle `length` frames long moves its frame k (`ramp_frames`): round(wrap_dx * k / L)."""
+    return int(round(wrap_dx * k / length))
+
+
 def ramp_frames(frames: list[Image.Image], wrap_dx: int) -> list[Image.Image]:
-    """Shift frame k by round(wrap_dx * k / L) so the cycle's end returns to its start."""
+    """Shift frame k by round(wrap_dx * k / L) (`ramp_offset`) so the cycle's end returns to its start."""
     L = len(frames)
     if wrap_dx == 0 or L < 2:
         return frames
     out = []
     for k, im in enumerate(frames):
-        dx = int(round(wrap_dx * k / L))
+        dx = ramp_offset(wrap_dx, k, L)
         if dx == 0:
             out.append(im)
             continue
@@ -1038,7 +1076,8 @@ def _repair_jumps(frames: list[Image.Image], interpolate: rife_mod.Interpolate |
     torso = None
     if wrap is not None:
         torso = None if "off" in wrap else repair_mod.Torso(frames)
-        asked = partial(repair_mod.overlap_wrap, others=wrap.get("others", {}), seam=wrap_on_cells, steps=ring_steps,
+        asked = partial(repair_mod.overlap_wrap, others=wrap.get("others", {}), seam=wrap_on_cells,
+                        steps=partial(ring_steps, cycles=wrap.get("cycles")),
                         seam_max=wrap["seam_max"], reads=bool(screen["reads"]), torso=torso, off=wrap.get("off"))
         try:
             frames, overlap = asked(frames, read=lazy_read)
@@ -1205,6 +1244,49 @@ def part_retake(record: dict[str, Any], cut: tuple[int, int], *, given: bool) ->
                          "cut": list(cut), "searched": not given},
             "limits": {k: record[k] for k in ("floor", "speed", "curve", "lead")},
             "remedy": "recut-or-retake" if given else "retake"}
+
+
+STAND_REASON = "start-stop"
+
+
+def stand_retake(cycle: dict[str, Any]) -> dict[str, Any] | None:
+    """A take to film again where the walk starts or stops in it: the clip shows its steps (`step_count`), its feet stand
+    together longer than any pass (the reading's `stands`) — the walk stands still — and the cut kept is not counted
+    two steps (its `cut` verdict is not `two`): no cut of two steps closes between the stands. `reason` STAND_REASON,
+    `reasons`, the stands, the run limit, the crossings and the cut kept with the count's word on it under
+    `start_stop`, and `remedy` `retake`. None otherwise."""
+    counted = cycle.get("step_count") or {}
+    cut = counted.get("cut") or {}
+    if not counted.get("readable") or not counted.get("stands") or cut.get("verdict") == "two":
+        return None
+    return {"reason": STAND_REASON, "reasons": [STAND_REASON],
+            "start_stop": {"stands": counted["stands"], "run_limit": counted["run_limit"], "crossings": counted["crossings"],
+                           "cut": [cycle["start"], cycle["length"]],
+                           **{k: cut[k] for k in ("verdict", "code", "why") if k in cut}},
+            "remedy": "retake"}
+
+
+def retakes(*records: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The loop's `retake`: the first reason's record, every reason in `reasons` and each other reason's numbers beside
+    it. None where there is none."""
+    found = [r for r in records if r]
+    if not found:
+        return None
+    out = dict(found[0])
+    for other in found[1:]:
+        out.update({k: v for k, v in other.items() if k not in ("reason", "reasons", "remedy")})
+        out["reasons"] = [*out["reasons"], *other["reasons"]]
+    return out
+
+
+def _stand_line(record: dict[str, Any]) -> str:
+    """A walk that starts or stops in the take (`stand_retake`), in words (a `video-loop: warning:` line)."""
+    said = record["start_stop"]
+    stands = ", ".join(f"{a}..{b}" for a, b in said["stands"])
+    why = f": {said['why']}" if "why" in said else ""
+    return (f"film this direction again ({STAND_REASON}) — the feet stand together {stands}, longer than any pass "
+            f"({said['run_limit']:g} frames): the walk starts or stops in the take, and the cut {said['cut'][0]}/{said['cut'][1]} "
+            f"kept is not two steps ({said.get('verdict', 'unread')}{why})")
 
 
 def _pop_lines(record: dict[str, Any], *, given: bool) -> list[str]:
@@ -1616,16 +1698,45 @@ def wrap_on_cells(frames: list[Image.Image]) -> float:
     return float(np.abs(flat[-1] - flat[0]).mean()) / step if step > 0 else math.inf
 
 
-def ring_steps(frames: list[Image.Image]) -> dict[str, Any]:
+def read_steps(frames: list[Image.Image], D: np.ndarray, *, view: str | None = None, facing: str = "right",
+               signals: dict[str, list[float]] | None = None) -> crossings_mod.Reading:
+    """The clip's crossings (`crossings.read`), and whether they mark its cycles (`local_cycle.read_cycles`, on `D`, the
+    clip's distances, the body's bob read off `signals` — the frames' leg signals, read here where not given, with the
+    body's own (`legs.body_signals`) — the order its feet are drawn in (`legs.feet_order`), and the `view`'s foot cue:
+    `legs.shade_cue` from the side or a diagonal, drawn in tones of `legs.TONE`, `legs.depth_cue` from the front or
+    back, in pixel rows of the body's median height). Every
+    count the clip's steps make is read on it: the search's cut (`_by_steps`), a fixed cut (`fixed_count`) and, carried
+    to the loop, the loop as it plays (`ring_steps`)."""
+    signals = leg_signals(frames) if signals is None else signals
+    try:
+        reading = crossings_mod.read(crossings_mod.foot_signals(frames, gap=signals["gap"] if signals else None))
+    except ValueError:
+        return crossings_mod.Reading(len(frames), "gap", [], why="a frame has no solid body to read the feet from")
+    cue = step = None
+    if view is not None:
+        lateral = view in handed_mod.LATERAL_VIEWS
+        cue = [legs_mod.shade_cue(f, facing) if lateral else legs_mod.depth_cue(f) for f in frames]
+        heights = signals["height"] if signals else legs_mod.strike_signals(frames)["height"]
+        step = legs_mod.TONE if lateral else 1.0 / float(np.median(heights))
+    body = {**signals, **legs_mod.body_signals(frames)} if signals else None
+    local_cycle.read_cycles(reading, D, view=view, cue=cue, cue_step=step, signals=body,
+                            order=[legs_mod.feet_order(f) for f in frames])
+    return reading
+
+
+def ring_steps(frames: list[Image.Image], *, cycles: dict[str, Any] | None = None) -> dict[str, Any]:
     """The steps a loop shows as it plays round: the crossings read on its frames played three times over
     (`crossings.read`), the turn in the middle judged (`Reading.judge`) — a two where the loop still walks two steps,
-    joined where the walk goes on."""
+    joined where the walk goes on. `cycles` is what the clip the loop was cut from said of its crossings
+    (`read_steps`): a loop is too short to be read two intervals on, and its crossings mark what the clip's mark."""
     ring = [*frames, *frames, *frames]
     signals = leg_signals(ring)
     try:
         reading = crossings_mod.read(crossings_mod.foot_signals(ring, gap=signals["gap"] if signals else None))
     except ValueError as exc:
         return {"verdict": "uncertain", "code": "unread", "why": str(exc)}
+    if cycles is not None and reading.readable:
+        reading.mark_cycles(cycles)
     return reading.judge(len(frames), len(frames))
 
 
@@ -1699,21 +1810,13 @@ def drawing_steps(cells: list[Image.Image], pixel: float = 1.0) -> dict[str, Any
             **({"jitter": jitter} if jitter else {})}
 
 
-def fixed_count(frames: list[Image.Image], D: np.ndarray, start: int, length: int) -> dict[str, Any]:
-    """The clip's own count of the steps a fixed cut covers: the crossings of its frames (`crossings.read`), the cut
-    judged (`Reading.judge`), and an odd count the clip may have missed a crossing in asked whether the clip a cut on is
-    the same picture (`local_cycle.same_picture_count`, as `--anchor motion-auto` asks it, on `D`, the clip's distances).
-    Recorded `chosen_by: caller`: the caller named the cut."""
-    signals = leg_signals(frames)
-    try:
-        reading = crossings_mod.read(crossings_mod.foot_signals(frames, gap=signals["gap"] if signals else None))
-    except ValueError:
-        reading = crossings_mod.Reading(len(frames), "gap", [], why="a frame has no solid body to read the feet from")
-    record = {**reading.record(), "chosen_by": "caller"}
-    said, record["cut"] = local_cycle.same_picture_count(reading, D, reading.judge(start, length))
-    if said is not None:
-        record["same_picture"] = said
-    return record
+def fixed_count(frames: list[Image.Image], D: np.ndarray, start: int, length: int, *, view: str | None = None,
+                facing: str = "right") -> dict[str, Any]:
+    """The clip's own count of the steps a fixed cut covers: the crossings of its frames, steps or cycles as the clip
+    says (`read_steps`, on `D`, the clip's distances, as `--anchor motion-auto` reads them), the cut judged
+    (`Reading.judge`). Recorded `chosen_by: caller`: the caller named the cut."""
+    reading = read_steps(frames, D, view=view, facing=facing)
+    return {**reading.record(), "chosen_by": "caller", "cut": reading.judge(start, length)}
 
 
 def odd_count(cycle: dict[str, Any]) -> bool:
@@ -1747,9 +1850,11 @@ def cycle_apart(files: list[Path], *, start: int, length: int, skip: int, analys
 
 def _by_steps(cycle: dict[str, Any] | None, refused: ValueError | None, *, frames: list[Image.Image], analysis: dict[str, Any],
               D: np.ndarray, trajectory: np.ndarray, window: CutWindow, searched: dict[str, Any], detect: dict[str, Any],
-              seam_max: float, cells: CutOnCells, turn: body_turn_mod.Turn | None = None) -> dict[str, Any]:
+              seam_max: float, cells: CutOnCells, view: str | None = None, facing: str = "right",
+              turn: body_turn_mod.Turn | None = None) -> dict[str, Any]:
     """The cut the clip's own steps choose (`local_cycle.by_steps`, the crossings of the frames the search read,
-    sprite_gen/video/crossings.py), recorded `step_count`, from the search's cut or its refusal (`refused`).
+    sprite_gen/video/crossings.py, steps or cycles as the clip and its `view` say: `read_steps`), recorded
+    `step_count`, from the search's cut or its refusal (`refused`).
     `cells` reads a cut of `frames` before it is cut as the seam gate and the seam pop gate read the loop.
 
     Where the clip shows its steps but no cut of two, and the search's cut is one they refute (one step, three), the
@@ -1757,10 +1862,7 @@ def _by_steps(cycle: dict[str, Any] | None, refused: ValueError | None, *, frame
     finds nothing names each refused window's count, those the crossings refute last, and raises. With `turn`, no cut
     that holds a frame of a body turn is taken, a two-step cut or the search's again."""
     signals = leg_signals(frames)
-    try:
-        reading = crossings_mod.read(crossings_mod.foot_signals(frames, gap=signals["gap"] if signals else None))
-    except ValueError:
-        reading = crossings_mod.Reading(len(frames), "gap", [], why="a frame has no solid body to read the feet from")
+    reading = read_steps(frames, D, view=view, facing=facing, signals=signals)
     moved = moved_alpha(frames, analysis)
     picked, record = local_cycle.by_steps(
         D, trajectory, reading, found=cycle, refused=refused, min_len=window.lo, max_len=window.max_len or len(frames),
@@ -1851,15 +1953,56 @@ def _counted(cycle: dict[str, Any], steps: int, *, window: CutWindow, D: np.ndar
     return found
 
 
+def _witnessed(cycle: dict[str, Any], *, frames: list[Image.Image], view: str | None = None) -> dict[str, Any]:
+    """The cut a walk's search and step count chose (`_by_steps`), held to one word before it is cut whichever way it
+    was chosen — the search's, two steps by the clip's crossings, crossings read or not: the body's
+    (`local_cycle.cut_word`: one of its lines saying so both on the screen and over its feet), or where it says
+    no cycle the order the feet are drawn in (`legs.feet_order`, as the step count reads it; not from the side `view`),
+    recorded `cut_witness` — not the order where the cut is the search's, kept because none of the clip's two-step cuts
+    closes (`declined`). Legs drawn alike loop as well on one step as on two, and crossings read off feet that slide,
+    or off a shadow under them on a picture that moves, count half steps.
+
+    - Its own rise and fall twice the cut, or four times: the cut is a cycle, or two, and stands. Cut two cycles, its
+      strip still counts two steps where the crossings counted them, and `video-set` leaves it out of its state's cycle
+      alignment (local_cycle.FOUR_STEPS, `local_cycle.four_steps`). Where its lowest row rises and falls twice the cut
+      more than its top line on the screen, the record carries a mark (`mark`), and nothing is held on it.
+    - Else nothing witnesses the cut handed out whole cycles, and it is held (`held: unwitnessed`): kept — two of the
+      clip's crossing intervals where it counted them, else as the search chose it — and named
+      (local_cycle.UNWITNESSED, `held_verdict`); `video-set` leaves it out of its state's cycle alignment
+      (`local_cycle.unwitnessed`). So is a cut the body rises and falls once in (`says` one step): one step of a walk,
+      or a whole cycle of a body that rises and falls once a cycle — a limp, a body with no legs that bounces as it
+      goes — which nothing that reads no leg tells apart. It is not cut again two long on its word: that would loop
+      two of such a body's cycles. A cut two lengths long comes only from the clip's own picture, read before this
+      (`_two_lengths`), and its cut is the cut read here.
+
+    A cut whose crossings the step count left on steps, nothing witnessing two steps an interval (`cycles.unwitnessed`),
+    is held so already, and named on its step count (`held: step count`). Only a walk or a run comes here
+    (motion-auto, its cycle searched, no count given)."""
+    first = [cycle["start"], cycle["length"]]
+    if ((cycle.get("step_count") or {}).get("cycles") or {}).get("unwitnessed"):
+        cycle["cut_witness"] = {"cut": first, "held": "step count"}
+        return cycle
+    strike = leg_signals(frames)
+    order = None if view == local_cycle.SIDE_VIEW or not strike else [legs_mod.feet_order(f) for f in frames]
+    said = {"cut": first, **local_cycle.cut_word({**strike, **legs_mod.body_signals(frames)} if strike else None,
+                                                 cycle["length"], order=order,
+                                                 declined=(cycle.get("step_count") or {}).get("declined"))}
+    cycle["cut_witness"] = said if said["says"] in ("two steps", "four steps") else {**said, "held": "unwitnessed"}
+    return cycle
+
+
 def _motion_auto(frames: list[Image.Image], files: list[Path], D: np.ndarray, trajectory: np.ndarray, analysis: dict[str, Any],
                  *, fps: float, window: CutWindow, prof: LoopProfile, state: str, steps: int | None, seam_max: float,
                  seam_pop_max: float | None, scratch: _Scratch, said: dict[str, Any],
-                 turn: body_turn_mod.Turn | None = None) -> tuple[dict[str, Any], list[Path], dict[str, Any]]:
+                 turn: body_turn_mod.Turn | None = None, view: str | None = None, facing: str = "right"
+                 ) -> tuple[dict[str, Any], list[Path], dict[str, Any], list[float] | None]:
     """`--anchor motion-auto`'s cut of `frames` — the clip after its lead-in, held, `files` written of them and `D`,
     `trajectory` and `analysis` read on them (auto_motion.analyse): the search, the gait fallback after a first search
     that finds nothing, then the count, given (`steps`, `_counted`) or the clip's crossings (`_by_steps`) and, for a cut
-    one step long that neither counted, the clip two lengths on (`_two_lengths`). Returns the
-    cut, and the files and the analysis it was read on (the gait fallback's, where it scaled the frames back); `said`
+    one step long that neither counted, the clip two lengths on (`_two_lengths`), and the cut so chosen held to one
+    word (`_witnessed`; `view`, the view the clip is filmed from, as the step count reads it). Returns the
+    cut, the files and the analysis it was read on (the gait fallback's, where it scaled the frames back), and the factor
+    the gait fallback scaled each frame by (None where it did not); `said`
     takes what the report adds (`automatic_motion_analysis` read again, `gait_fallback`), whether a cut is found or the
     search raises. With `turn` (body_turn.Turn), no cut that holds a frame of a body turn is taken."""
     lo, hi = window.lo, window.hi
@@ -1868,6 +2011,7 @@ def _motion_auto(frames: list[Image.Image], files: list[Path], D: np.ndarray, tr
     searched: dict[str, Any] = {"min_len": lo, "max_len": hi}
     refused: ValueError | None = None
     cycle = None
+    undone: list[float] | None = None
     # The cuts the search chooses among, read before one is cut as the seam gate and the seam pop gate read the loop.
     cells = CutOnCells(frames, pop_max=seam_pop_max)
     try:
@@ -1884,6 +2028,7 @@ def _motion_auto(frames: list[Image.Image], files: list[Path], D: np.ndarray, tr
         if abs(drift["drift"]) >= gait_fallback.SCALE_DRIFT_MIN:
             fallback["padding_ltrb"] = list(gait_fallback.undo_padding(frames, drift))
             frames = gait_fallback.undo_scale(frames, drift, pad=tuple(fallback["padding_ltrb"]))
+            undone = [gait_fallback.frame_hold(k, drift)["scale"] for k in range(len(frames))]
             files = gait_fallback.write_frames(frames, [f.name for f in files], scratch.new())
             D, trajectory, analysis = auto_motion.analyse(frames, fps=fps)
             said["automatic_motion_analysis"] = analysis
@@ -1917,11 +2062,14 @@ def _motion_auto(frames: list[Image.Image], files: list[Path], D: np.ndarray, tr
                          detect=detect, cells=cells, turn=turn)
     else:
         cycle = _by_steps(cycle, refused, frames=frames, analysis=analysis, D=D, trajectory=trajectory,
-                          window=window, searched=searched, detect=detect, seam_max=seam_max, cells=cells, turn=turn)
+                          window=window, searched=searched, detect=detect, seam_max=seam_max, cells=cells, view=view,
+                          facing=facing, turn=turn)
         # A cut one step long that nothing counted: the clip itself is asked for two (`_two_lengths`).
         cycle = _two_lengths(cycle, prof=prof, fps=fps, state=state, window=window, D=D, trajectory=trajectory, frames=frames,
                              files=files, moved=moved, detect=detect, cells=cells, seam_max=seam_max, turn=turn)
-    return cycle, files, analysis
+        # Whichever way it was chosen, the cut that will play is held to one word.
+        cycle = _witnessed(cycle, frames=frames, view=view)
+    return cycle, files, analysis, undone
 
 
 def _from_lead_in(record: Any, lead: int) -> Any:
@@ -2120,12 +2268,13 @@ def _blend_wrap(frames: list[Image.Image], pin_file: Path, *, mode: str, anchor:
     return wrap_blend_mod.apply(frames, pin, fps=fps, seam_max=seam_max)
 
 
-def _size_hold(frames: list[Image.Image], *, lo: int, hi: int,
-               cut: tuple[int, int] | None = None) -> tuple[list[Image.Image] | None, dict[str, Any], Any]:
+def _size_hold(frames: list[Image.Image], *, lo: int, hi: int, cut: tuple[int, int] | None = None
+               ) -> tuple[list[Image.Image] | None, dict[str, Any], Any, list[float] | None]:
     """A walk or run held at its first frame's size, and its feet on the first frame's row, before its cut is chosen
     (`--size-hold auto`): the frames held (None: the clip changes size by less than SIZE_HOLD_MIN, read one cycle on,
-    and is cut as filmed), the report's `size_hold`, and where a box of a frame as filmed lands in its held frame
-    (`gait_fallback.held_box`, None when not held).
+    and is cut as filmed), the report's `size_hold`, where a box of a frame as filmed lands in its held frame
+    (`gait_fallback.held_box`), and the factor each frame was scaled by (`gait_fallback.frame_hold`); the last two None
+    when not held.
 
     A clip filmed from its first frame only grows or shrinks as it plays, so the frame one cycle on is not the size of
     the first and the loop pops at the wrap; a walk away from the camera climbs the frame as well, and held at its size
@@ -2140,14 +2289,14 @@ def _size_hold(frames: list[Image.Image], *, lo: int, hi: int,
                             **{k: measured[k] for k in ("height_first_px", "height_last_px", "drift", "method",
                                                         "lag", "pairs", "per_lag", "pose_match", "drift_fitted_line")}}
     if abs(measured["drift"]) < gait_fallback.SIZE_HOLD_MIN:
-        return None, hold, None
+        return None, hold, None, None
     feet = gait_fallback.foot_drift(frames, measured)
     if cut is not None:
         seen = hold["at_cut"] = gait_fallback.at_cut(frames, measured, feet, start=cut[0], length=cut[1])
         if not seen["size"]:
             hold["why"] = ("the cut does not change size a cycle of its length apart as the clip reads it (frames that are "
                            "not the walk, or a clip too short to show its cycle twice): cut as filmed")
-            return None, hold, None
+            return None, hold, None, None
         if feet["held"] and not seen["feet"]:
             feet = {**feet, "held": False, "lift": None,
                     "why": "the cut's feet do not move a cycle of its length apart as the clip reads them"}
@@ -2159,7 +2308,8 @@ def _size_hold(frames: list[Image.Image], *, lo: int, hi: int,
         # The move each frame of the cut was held by, exact (`gait_fallback.frame_hold`): `video-loop-repair` holds the
         # cut's source frames by it again before it reads them (sprite_gen/video/source.py).
         hold["cut_frames"] = [gait_fallback.frame_hold(k, measured, lift) for k in range(cut[0], cut[0] + cut[1])]
-    return held, hold, partial(gait_fallback.held_box, measured=measured, pad=pad, lift=lift)
+    return (held, hold, partial(gait_fallback.held_box, measured=measured, pad=pad, lift=lift),
+            [gait_fallback.frame_hold(k, measured, lift)["scale"] for k in range(len(frames))])
 
 
 class _Scratch:
@@ -2191,6 +2341,38 @@ def _refuse_overlap(frames_dir: Path, files: list[Path], out_dir: Path, name: st
     outputs = {f"{path.name} in --out-dir": path for path in (*handed_over(out, name), out / CYCLE_REFUSED_DIR)}
     outputs["--report" if report_given else f"{target.name} in --out-dir"] = target
     refuse_overlap({"--frames-dir": frames_dir, **{f"{f.name} in --frames-dir": f for f in files}}, outputs, verb="video-loop")
+
+
+def _cell_record(strip_bytes: bytes, cells: list[Image.Image], *, start: int, length: int, samples: list[int],
+                 anchored: list[str], wrap_dx: int, motion: dict[str, Any] | None,
+                 scales: dict[str, list[float]], upsampled: dict[str, Any] | None = None) -> dict[str, Any]:
+    """The strip's record of its cells (`CELL_RECORD`), bound to the strip by its PNG's sha256: for each cell, the frame of
+    the cut it shows at the end of the cut (`cells`, frame `samples[c]` of a cut `length` frames long from clip frame
+    `start`; at --out-fps or with its air retimed, `upsampled`, the frame cell `samples[c]` is, and one made between two
+    frames reads as the frame at or before its time, as the seam reads it), the source frame it is, where the anchor
+    moved that frame before the crop (the body anchor's ramp, `ramp_offset` of `wrap_dx`; the motion correction's place,
+    `motion_anchor.laid_at`; nothing at --anchor none or feet),
+    the factor each step that held the clip's frames to one size scaled it by (`scales`, per clip frame; 1 where none did),
+    and whether it is that frame as filmed but for the anchor's move: its pixels are its pixels anchored, before any
+    repair (`anchored`, the cut's receipt), and no step held the clip's frames. What made a cell otherwise — a repair, a
+    blend at the wrap, a hold, a frame between at --out-fps or in a retimed air, the air retime's move — is not listed:
+    the cell's pixels say it."""
+    def moved(k: int) -> list[int]:
+        if motion is not None:
+            return list(motion_anchor.laid_at(motion, k))
+        return [ramp_offset(wrap_dx, k, length), 0]
+
+    def frame(c: int) -> int:
+        if upsampled is None:
+            return c
+        shown = upsampled["source_frames"][c]
+        return shown if shown is not None else min(length - 1, math.floor(upsampled["times"][c]))
+
+    return {"strip_sha256": evidence_mod.digest(strip_bytes), "cells": [
+        {"source_frame": start + k, "anchor_move_px": moved(k),
+         "scale": {step: scales[step][start + k] if step in scales else 1.0 for step in CELL_SCALE_STEPS},
+         "as_filmed": not scales and evidence_mod.digest(cell.tobytes()) == anchored[k]}
+        for k, cell in ((frame(c), cell) for c, cell in zip(samples, cells))]}
 
 
 def run_loop(frames_dir: Path, out_dir: Path, **options: Any) -> dict[str, Any]:
@@ -2235,6 +2417,7 @@ def _cut_loop(
     wrap_blend: str = "auto",
     unfixed: str = "warn",
     seam_pop_max: float | None = repair_mod.SEAM_POP_REFERENCE,
+    view: str | None = None,
     body_turn: str = "warn",
     fill_held: str = "auto",
     out_fps: float | None = None,
@@ -2275,8 +2458,11 @@ def _cut_loop(
         raise SystemExit(f"video-loop: unknown --wrap-blend {wrap_blend!r}; expected one of {', '.join(wrap_blend_mod.MODES)}")
     if unfixed not in UNFIXED_MODES:
         raise SystemExit(f"video-loop: unknown --unfixed {unfixed!r}; expected one of {', '.join(UNFIXED_MODES)}")
+    from sprite_gen.gen.facing import FACINGS
     if facing not in FACINGS:
         raise SystemExit(f"video-loop: unknown --facing {facing!r}; expected one of {', '.join(FACINGS)}")
+    if view is not None and view not in handed_mod.VIEWS:
+        raise SystemExit(f"video-loop: unknown --view {view!r}; expected one of {', '.join(handed_mod.VIEWS)}")
     if seam_pop_max is not None and not (math.isfinite(seam_pop_max) and seam_pop_max > 0):
         raise SystemExit(f"video-loop: --seam-pop-max {seam_pop_max}: a bound over 0, or off")
     if body_turn not in body_turn_mod.MODES:
@@ -2352,7 +2538,7 @@ def _cut_loop(
     masses = effect.frame_masses(files) if cycle_mode == "lifetime" else frame_masses(files)
     periodic_attempt: dict[str, Any] | None = None
     report_base = {
-        "kind": "sprite-gen-video-loop-report", "frames_dir": str(frames_dir),
+        "kind": REPORT_KIND, "frames_dir": str(frames_dir),
         "source": evidence_mod.source_identity(files, fps),
         "producer": evidence_mod.engine_identity(),
         "out_dir": str(out_dir), "state": state, "fps": fps, "frames_total": n,
@@ -2372,15 +2558,19 @@ def _cut_loop(
     shifted = False
     clip_files, clip_D = files, D
     files, D = files[skip:], D[skip:, skip:]
+    # Per step that holds a clip's frames to one size (`CELL_SCALE_STEPS`), the factor it scaled each frame of the clip by,
+    # where it held them (`cell_record`).
+    clip_scales: dict[str, list[float]] = {}
     try:
         if anchor == "motion-auto":
             source_frames = gait_frames[skip:]
             if size_hold == "auto":
                 # Held before the search (`_size_hold`), the cut is chosen on frames of one size whose feet stand on one
                 # row. The gait fallback below then finds nothing to undo.
-                held, report_base["size_hold"], _ = _size_hold(source_frames, lo=lo, hi=hi)
+                held, report_base["size_hold"], _, scales = _size_hold(source_frames, lo=lo, hi=hi)
                 if held is not None:
                     source_frames = held
+                    clip_scales["size_hold"] = [1.0] * skip + scales
                     files = gait_fallback.write_frames(held, [f.name for f in files], scratch.new())
             else:
                 report_base["size_hold"] = {"applied": False, "why": "--size-hold off"}
@@ -2403,7 +2593,8 @@ def _cut_loop(
                 report_base["lead_in"]["search_from"] = skip
             report_base["automatic_motion_analysis"] = analysis
             search = partial(_motion_auto, source_frames, files, D, trajectory, analysis, fps=fps, window=window, prof=prof,
-                             state=state, steps=steps, seam_max=seam_max, seam_pop_max=seam_pop_max, scratch=scratch)
+                             state=state, steps=steps, seam_max=seam_max, seam_pop_max=seam_pop_max, scratch=scratch, view=view,
+                             facing=facing)
             # The body's turn (sprite_gen/video/body_turn.py), read on the clip as keyed against its first frame, the still,
             # lead-in or not: a cut that holds a frame of one is not taken while another holds a cycle. Where none does,
             # --body-turn warn takes the cut the search takes with the turn in, and says so; refuse refuses the clip in a line
@@ -2442,7 +2633,9 @@ def _cut_loop(
                         print(f"video-loop: warning: {body_turn_mod.unfound(turning)}", file=sys.stderr)
                     raise
             report_base.update(said)
-            cycle, files, analysis = found
+            cycle, files, analysis, undone = found
+            if undone is not None:
+                clip_scales["gait_fallback"] = [1.0] * skip + undone
             if turn is not None:
                 cut = (cycle["start"] + skip, cycle["length"])
                 holds = turn.held(cycle["start"], cycle["length"])
@@ -2484,9 +2677,10 @@ def _cut_loop(
                 # A walk or run cut the caller names is held as a search's cut is (`_size_hold`), read over the whole clip,
                 # and cut on the frames held: the cut's distances, its count and the seam the gate reads are the frames
                 # that play. The clip is then the clip held (a fixed cut leaves no lead-in out).
-                held, report_base["size_hold"], box_of = _size_hold(gait_frames, lo=lo, hi=hi, cut=(start, length))
+                held, report_base["size_hold"], box_of, scales = _size_hold(gait_frames, lo=lo, hi=hi, cut=(start, length))
                 if held is not None:
                     gait_frames = held
+                    clip_scales["size_hold"] = scales
                     files = gait_fallback.write_frames(held, [f.name for f in files], scratch.new())
                     D = distance_matrix(files)
                     clip_files, clip_D = files, D
@@ -2500,7 +2694,7 @@ def _cut_loop(
             if gait_frames is not None:
                 # A walk or run loops on two steps: the clip's own count of the cut the caller named, as a search's cut is
                 # counted. An odd count swaps the legs at the wrap, however close the frames there look.
-                cycle["step_count"] = fixed_count(gait_frames, D, start, length)
+                cycle["step_count"] = fixed_count(gait_frames, D, start, length, view=view, facing=facing)
                 if odd_count(cycle):
                     counted = cycle["step_count"]
                     if seam_max <= STEP_RATIO_MAX:
@@ -2626,11 +2820,14 @@ def _cut_loop(
             refuse(target, out_dir, name, {**report_base, "status": "failed", "error": error, "cycle": cycle})
             raise SystemExit(error) from exc
         report_base["motion_anchor"] = motion
-    if anchor in ("none", "body") and cycle["kind"] != "lifetime":
+    # Each frame of the cut anchored, before any repair, pixel for pixel: its receipt, and what each cell's record reads
+    # whether it is that frame as filmed (`cell_record`).
+    anchored = [evidence_mod.digest(f.tobytes()) for f in frames]
+    if anchor != "feet" and cycle["kind"] != "lifetime":
         from sprite_gen.video.source import RECIPE
         report_base["source_projection"] = {
-            "recipe": RECIPE, "wrap_dx_px": wrap_dx,
-            "before_repair_pixels_sha256": [evidence_mod.digest(f.tobytes()) for f in frames],
+            "recipe": MOTION_RECIPE if motion is not None else RECIPE, "wrap_dx_px": wrap_dx,
+            "before_repair_pixels_sha256": anchored,
         }
     # A loop closes on its first cell again; a cut played once runs from its first to its last.
     ring = cycle["kind"] not in ("one-shot", "lifetime", *nonloop.KINDS)
@@ -2685,6 +2882,7 @@ def _cut_loop(
             wrap = ({"others": cycle_apart(files, start=i, length=L, skip=skip, analysis=analysis, motion=motion,
                                            size=frames[0].size), "seam_max": seam_max} if overlap_wrap == "on"
                     else {"off": OVERLAP_WRAP_OFF, "seam_max": seam_max})
+            wrap["cycles"] = cycle["step_count"].get("cycles")
         try:
             frames, report_base["jump_repair"], overlap = _repair_jumps(frames, interpolate, facing=facing, required=repair == "on",
                                                                         screen=report_base["ghost_screen"], wrap=wrap)
@@ -2804,7 +3002,10 @@ def _cut_loop(
         # again (`retake`), named.
         _pop_settled(report_base["part_pop"], frames, cut_frames)
         given = cycle_mode in ("fixed", "pinned")
-        report_base["retake"] = part_retake(report_base["part_pop"], (i, L), given=given)
+        stand = stand_retake(cycle)
+        report_base["retake"] = retakes(part_retake(report_base["part_pop"], (i, L), given=given), stand)
+        if stand is not None:
+            print(f"video-loop: warning: {_stand_line(stand)}", file=sys.stderr)
         pops_left = _pop_lines(report_base["part_pop"], given=given)
         if pops_left and unfixed == "refuse":
             error = (f"video-loop: a part pops at the loop's wrap — {'; '.join(pops_left)} ({cycle.get('kind', 'periodic')} "
@@ -2862,7 +3063,7 @@ def _cut_loop(
                 record = report_base["air_retime"]
                 held_record["out_fps"] = {"asked": out_fps, "fps": fps, "applied": True, "cells": len(frames),
                                           "times": [round(x, 4) for x in upsampled], "made": record["made"],
-                                          "shown_again": record["shown_again"]}
+                                          "shown_again": record["shown_again"], "source_frames": retimed["source_frames"]}
     if out_fps is not None and retimed is None:
         # A rate above the clip's: every cell at its own time, made between the frames beside it (held_fill.upsample).
         try:
@@ -2983,7 +3184,12 @@ def _cut_loop(
     n_out = min(n_out, int(strip_meta["frames"]))
     strip_path = out_dir / f"{name}.strip.png"
     strip.save(strip_path)
-    atomic_write_text(out_dir / f"{name}.strip.json", json.dumps(strip_meta, indent=2) + "\n")
+    cell_record = _cell_record(strip_path.read_bytes(), [frames[k] for k in strip_meta["sample_indices"]], start=i,
+                               length=L, samples=strip_meta["sample_indices"], anchored=anchored, wrap_dx=wrap_dx,
+                               motion=motion, scales=clip_scales,
+                               upsampled=None if upsampled is None else retimed if retimed is not None else held_record["out_fps"])
+    # The record of its cells is the strip's own: written beside it, not into the report.
+    atomic_write_text(out_dir / f"{name}.strip.json", json.dumps({**strip_meta, CELL_RECORD: cell_record}, indent=2) + "\n")
 
     # resampled GIF/WebP frames: same crop as the strip, n_out evenly across the cycle
     single_play = cycle["kind"] in nonloop.KINDS
@@ -3145,7 +3351,7 @@ def _cut_loop(
 
     payload = {
         **report_base,
-        "kind": "sprite-gen-video-loop-report",
+        "kind": REPORT_KIND,
         "frames_dir": str(frames_dir),
         "out_dir": str(out_dir),
         "state": state,
@@ -3160,7 +3366,7 @@ def _cut_loop(
         "n_out": n_out,
         "gif_fps": gif_fps,
         "delay_ms": delay_ms,
-        "status": "passed",
+        "status": REPORT_PASSED,
         "resampled_seam": resampled_seam,
         "resampled_inner_mean_adjacent": resampled_adjacent,
         "resampled_seam_ratio": None if single_play else round(seam_ratio, 4),
@@ -3191,6 +3397,7 @@ def _seam_pop_max(value: str) -> float | None:
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
+    from sprite_gen.gen.facing import FACINGS
     parser.add_argument("--frames-dir", required=True, type=Path, help="keyed RGBA frames from `sprite-gen video-frames` (…/keyed)")
     parser.add_argument("--out-dir", required=True, type=Path)
     parser.add_argument("--fps", type=float, default=24.0, help="frame rate of the keyed frames (from the frames report)")
@@ -3230,6 +3437,15 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                              "not bounded by half the clip but held inside --min-len/--max-len: a window that leaves none of it "
                              "fails), recorded `cycle.steps`; 2: the cut is kept, recorded. Either way the strip "
                              "metadata says `steps: 2`, which `video-cycle-align` reads")
+    parser.add_argument("--view", choices=handed_mod.VIEWS, default=None,
+                        help="walk/run: the view the clip is filmed from. The step count asks whether the feet, which need not "
+                             "meet on the screen at every pass, meet once a cycle (`cycle.step_count.cycles`): where a pass "
+                             "can hide, as without it, and from the front, the back or a diagonal also where passes are brief. "
+                             "Wherever it is asked, the crossings mark cycles only where the body's top line rises and falls "
+                             "twice an interval; the view's foot cue only refuses, where it says the other leg leads one "
+                             "interval on. With no witness they stay on steps, as from the side, with a warning "
+                             "(docs/loop-repair.md section 3, \"The step count\"). Default: not given, asked only where a pass "
+                             "can hide")
     parser.add_argument("--body-turn", choices=body_turn_mod.MODES, default="warn",
                         help="--anchor motion-auto: the body's turn in the walk — each frame's torso read between the clip's first "
                              "frame and that frame mirrored (`body_turn`, docs/video-pipeline.md section 4, \"The body turn\"; a "
@@ -3289,6 +3505,7 @@ def run(**kwargs: object) -> int:
         overlap_wrap=str(kwargs.get("overlap_wrap") or "on"), wrap_blend=str(kwargs.get("wrap_blend") or "auto"),
         unfixed=str(kwargs.get("unfixed") or "warn"),
         seam_pop_max=kwargs.get("seam_pop_max", repair_mod.SEAM_POP_REFERENCE),  # type: ignore[arg-type]
+        view=kwargs.get("view"),  # type: ignore[arg-type]
         body_turn=str(kwargs.get("body_turn") or "warn"),
         fill_held=str(kwargs.get("fill_held") or "auto"), out_fps=kwargs.get("out_fps"),  # type: ignore[arg-type]
         air_retime=kwargs.get("air_retime"), meters_per_px=kwargs.get("meters_per_px"),  # type: ignore[arg-type]
@@ -3326,6 +3543,9 @@ def run(**kwargs: object) -> int:
     if "step_count" in payload["cycle"]:
         counted = payload["cycle"]["step_count"]
         summary["cycle"]["step_count"] = {k: counted[k] for k in ("mode", "readable", "chosen_by", "cut", "why") if k in counted}
+    if "cut_witness" in payload["cycle"]:
+        summary["cycle"]["cut_witness"] = {k: payload["cycle"]["cut_witness"][k] for k in ("cut", "says", "by", "held", "mark")
+                                           if k in payload["cycle"]["cut_witness"]}
     if payload.get("body_turn", {}).get("turns"):
         summary["body_turn"] = {k: payload["body_turn"][k] for k in ("verdict", "turns", "cut") if k in payload["body_turn"]}
     if payload.get("ghost_screen", {}).get("ghosts") or payload.get("ghost_screen", {}).get("reads") is False:

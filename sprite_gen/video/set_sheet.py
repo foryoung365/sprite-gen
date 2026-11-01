@@ -46,7 +46,7 @@ from typing import Any
 from PIL import Image
 
 from sprite_gen.gen import handedness as handed_mod
-from sprite_gen.spec.assets import load_asset
+from sprite_gen.spec.assets import SET_SHEET_KIND, load_asset
 from sprite_gen.spec.runio import atomic_write_text
 from sprite_gen.util.resample import resize_cell
 from sprite_gen.video import loop as loop_mod
@@ -54,7 +54,7 @@ from sprite_gen.video.repair import ALPHA_SOLID
 from sprite_gen.util.console import utf8_streams
 
 PROG = "video-set-sheet"
-KIND = "sprite-gen-video-set-sheet"
+KIND = SET_SHEET_KIND
 SCHEMA = 1
 # The compass code of each view, and the order of a sheet's rows: clockwise from the viewer.
 ORDER = ("S", "SW", "W", "NW", "N", "NE", "E", "SE")

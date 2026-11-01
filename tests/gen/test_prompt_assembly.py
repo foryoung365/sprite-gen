@@ -266,6 +266,8 @@ def test_video_prompt_warns_when_the_callers_words_turn_the_other_way() -> None:
     record = clip_prompt.plan_prompt(direction="side", state="walk", facing="right", motion="It walks to the left.")
     assert any('"walks to the left"' in line for line in record["warnings"])
     assert record["notes"][0]["kind"] == "conflict"
+    again = clip_prompt.plan_prompt(direction="side", state="walk", facing="right", motion="It walks to the right.")
+    assert again["warnings"] == [] and again["notes"][0]["kind"] == "repeat"
     quiet = clip_prompt.plan_prompt(direction="side", state="walk", facing="right", motion="It strolls.")
     assert quiet["warnings"] == [] and "notes" not in quiet
 

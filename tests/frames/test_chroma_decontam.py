@@ -496,9 +496,40 @@ def test_cli_exposes_the_flag_on_every_entry_point():
     for argv in (["cutout", "x.png", "--decontam", "palette"],
                  ["gen", "--out", "x.png", "--transparent", "--decontam", "palette"],
                  ["video-frames", "--clip", "c.mp4", "--out-dir", "o", "--decontam", "palette"],
+                 ["video-set", "--out-dir", "o", "--decontam", "palette"],
                  ["extract", "--run-dir", "r", "--decontam", "palette"],
                  ["inspect", "--run-dir", "r", "--decontam", "palette"]):
         assert parser.parse_args(argv).decontam == "palette"
+
+
+def _choices_of(flag: str) -> dict[str, object]:
+    """`flag`'s choices on every verb and module parser that has it, by parser name."""
+    import argparse
+
+    from sprite_gen import cli
+    from sprite_gen.frames import extract
+    from sprite_gen.qa import inspect
+
+    verbs = next(a for a in cli._build_parser()._actions if isinstance(a, argparse._SubParsersAction)).choices
+    parsers = {**verbs, "frames.extract module": extract._build_parser(), "qa.inspect module": inspect._build_parser()}
+    return {name: action.choices for name, parser in parsers.items()
+            for action in parser._actions if flag in action.option_strings}
+
+
+def test_every_decontam_flag_reads_the_one_declaration():
+    """Every `--decontam` takes its choices from the one tuple, and the names other modules read it by are that tuple."""
+    from sprite_gen.frames import extract
+
+    readers = _choices_of("--decontam")
+    assert [name for name, choices in readers.items() if choices is not decontam.DECONTAM_MODES] == [], sorted(readers)
+    assert decontam.DECONTAM_MODES is extract.DECONTAM_MODES and frames_mod.DECONTAM_MODES is extract.DECONTAM_MODES
+
+
+def test_every_chroma_mode_flag_reads_the_one_declaration():
+    from sprite_gen.frames import extract
+
+    readers = _choices_of("--chroma-mode")
+    assert [name for name, choices in readers.items() if choices is not extract.CHROMA_MODES] == [], sorted(readers)
 
 
 # --------------------------------------------------------------------------- gen (YCbCr matte)

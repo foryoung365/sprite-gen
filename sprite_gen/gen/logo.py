@@ -40,6 +40,7 @@ from PIL import Image
 
 import sprite_gen.gen as gen_pkg
 from sprite_gen.frames import logo_matte
+from sprite_gen.frames.cutout import GREEN, MAGENTA
 from sprite_gen.spec.runio import atomic_save_image, atomic_write_text, new_stage, refuse_overlap, same_folder
 from sprite_gen.util.cli_kwargs import namespace_from_kwargs
 
@@ -73,8 +74,8 @@ REFUSED = ("mismatch", "no-text")  # the verdicts a text check refuses on
 # and lavender are not): a colour the style or scene names is looked for in the title's box at a smaller share
 # (`logo_matte.choose_key`).
 KEY_COLOUR_WORDS = {
-    "green": ("green", "mint", "lime", "emerald", "jade", "chartreuse"),
-    "magenta": ("magenta", "fuchsia", "pink", "purple", "violet", "plum", "orchid"),
+    GREEN: ("green", "mint", "lime", "emerald", "jade", "chartreuse"),
+    MAGENTA: ("magenta", "fuchsia", "pink", "purple", "violet", "plum", "orchid"),
 }
 # How many readings one text check may take: a reading that would refuse is read again, up to this many, and one
 # that spells the text passes (docs/logo.md, the text check).
@@ -107,7 +108,7 @@ def mood_prompt(text: str, *, subtitle: str | None = None, style: str | None = N
 
 
 def lettering_prompt(text: str, *, subtitle: str | None = None, composition: str = "title-screen",
-                     language: str | None = None, key: str = "magenta") -> str:
+                     language: str | None = None, key: str = MAGENTA) -> str:
     """Step 2: only the lettering of the attached mood image, as it is drawn there, on a flat key."""
     picture = COMPOSITIONS[composition]["picture"]
     words = _quoted(text) + (f" and the subtitle {_quoted(subtitle)}" if subtitle else "")
@@ -273,7 +274,7 @@ def _reads(check: dict[str, Any]) -> str:
 def _in_hue(choice: dict[str, Any], *keys: str) -> str:
     """Where the key was chosen and how much of it is in each key's hue, with the brief's words for it: "the
     title's box in the mood image is 8.0 % green-hued (the brief names mint)"."""
-    where = "the title's box in the mood image" if choice["region"] == "lettering-box" else "the mood image"
+    where = "the title's box in the mood image" if choice["region"] == logo_matte.LETTERING_BOX else "the mood image"
     shares = []
     for key in keys:
         score = choice["scores"][key]
@@ -467,7 +468,7 @@ def _draw_lettering(provider: str, backend, report: dict[str, Any], files: dict[
     report["steps"]["key"] = {**choice, "key": key, "source": "auto" if chroma_key == "auto" else "explicit"}
     if key is None:
         raise _Refusal("key", f"logo: the title's colours carry both keys' hues — "
-                       f"{_in_hue(choice, 'green', 'magenta')}; a letter in the key's hue comes out see-through on "
+                       f"{_in_hue(choice, GREEN, MAGENTA)}; a letter in the key's hue comes out see-through on "
                        "it, and there is no third key. Restyle the title without one of them, or name the key to lose "
                        f"with --chroma-key (--mood {files['mood.png']} skips the mood image; the lettering was not "
                        "bought)")
@@ -508,13 +509,13 @@ def _cut(files: dict[str, Path], report: dict[str, Any], work: Path, backend, ra
     inside = logo_matte.see_through_inside(logo)
     report["logo"] = {"size": list(logo.size), "alpha": cover, "key_hue_left": logo_matte.key_hue_left(logo, key),
                       "see_through_inside": inside}
-    other = "green" if key == "magenta" else "magenta"
+    other = GREEN if key == MAGENTA else MAGENTA
     if cover["visible_opaque_share"] < logo_matte.SEE_THROUGH_WARN_SHARE:
         warn(f"only {cover['visible_opaque_share'] * 100:.0f}% of the visible lettering is opaque; if the letters "
              f"are drawn in the {key} key's colour, run again with --chroma-key {other}")
     _publish(logo_matte.preview(logo), files["logo.preview.png"])
     report["files"]["preview"] = str(files["logo.preview.png"])
-    if inside["wide"] and stats["method"] == "logo-unmix":
+    if inside["wide"] and stats["method"] == logo_matte.UNMIX:
         _publish(logo, files["logo.rejected.png"])
         report["files"]["rejected"] = str(files["logo.rejected.png"])
         again = f" --mood {files['mood.png']}" if files["mood.png"].is_file() else ""

@@ -196,7 +196,7 @@ def run(
     source, out_dir = Path(source).resolve(), Path(out_dir).resolve()
     # The shared adapter alone owns source formats and timing interpretation.
     # Lazy import also keeps the pure image operation independent of file IO.
-    from sprite_gen.spec.assets import load_asset
+    from sprite_gen.spec.assets import ASSET_KIND, load_asset
 
     asset = load_asset(source, state=state, fps=fps, anchor=anchor)
     if not asset.frames or len(asset.frames) != len(asset.durations):
@@ -227,7 +227,7 @@ def run(
         payloads[target] = _png_bytes(rendered)
     payloads[sheet_path] = _png_bytes(sheet)
     descriptor = {
-        "kind": "sprite-gen-asset", "version": 1,
+        "kind": ASSET_KIND, "version": 1,
         "frames": [{"file": target.name, "duration": duration}
                    for target, duration in zip(targets, durations)],
         "anchor": list(output_anchor),

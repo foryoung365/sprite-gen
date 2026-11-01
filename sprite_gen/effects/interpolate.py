@@ -46,17 +46,21 @@ from PIL import Image
 
 from sprite_gen.frames.extract import (extract_component_images, register_row_frames,
                       remove_chroma_background_ycbcr, tighten_components)
+from sprite_gen.gen.base import PROVIDER_CODEX, PROVIDER_GROK, PROVIDER_HIGGSFIELD
 from sprite_gen.spec.layout import raw_rel, take_raw_rel
 from sprite_gen.spec.runio import load_request, write_request
 from sprite_gen.util.console import utf8_streams
 
-PROVIDERS = ("higgsfield", "codex", "grok")
+PROVIDERS = (PROVIDER_HIGGSFIELD, PROVIDER_CODEX, PROVIDER_GROK)
+# 보간 자기 기본값. gen 의 HARD_DEFAULT_PROVIDER 와 따로 정한다. 이 포크는 higgsfield (docs/higgsfield.md);
+# 3-way 실측 비교 승자는 codex (docs/frame-interpolation.md).
+DEFAULT_PROVIDER = PROVIDER_HIGGSFIELD
 
 # interpolator 시그니처: (img0 RGB, img1 RGB, t, prompt) -> mid RGB. 테스트는 스텁을 주입한다.
 Interpolator = Callable[[Image.Image, Image.Image, float, str], Image.Image]
 
 
-def gen_interpolator(provider: str = "higgsfield") -> Interpolator:
+def gen_interpolator(provider: str = DEFAULT_PROVIDER) -> Interpolator:
     """생성형 in-between interpolator — 두 정합 프레임을 ref 로 물려 중간 포즈를 그리게 한다."""
     if provider not in PROVIDERS:
         raise SystemExit(f"unknown interpolation provider: {provider} (choose from {PROVIDERS})")
@@ -206,7 +210,7 @@ def write_take(run_dir: Path, request: dict[str, Any], state: str, label: str,
 
 def interpolate_between(run_dir: Path | str, state: str, index_a: int, index_b: int,
                         t: float = 0.5, label: str | None = None,
-                        provider: str = "higgsfield",
+                        provider: str = DEFAULT_PROVIDER,
                         interpolator: Interpolator | None = None) -> Path:
     """두 프레임 사이 중간 프레임을 만들어 테이크로 기록한다. 반환 = 테이크 raw 경로."""
     run_dir = Path(run_dir)
@@ -242,8 +246,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--state", required=True)
     parser.add_argument("--between", nargs=2, type=int, required=True,
                         metavar=("FROM", "TO"), help="primary 스트립의 프레임 인덱스 두 개")
-    parser.add_argument("--provider", choices=PROVIDERS, default="higgsfield",
-                        help="생성 백엔드 (기본 codex — 3-way 실측 비교 승자)")
+    parser.add_argument("--provider", choices=PROVIDERS, default=DEFAULT_PROVIDER,
+                        help=f"생성 백엔드 (기본 {DEFAULT_PROVIDER}; 3-way 실측 비교 승자는 codex)")
     parser.add_argument("--t", type=float, default=0.5, help="보간 시점 (0..1, 기본 0.5)")
     parser.add_argument("--label", default=None, help="테이크 라벨 (기본 tween_<A>_<B>_t<t>)")
     parser.add_argument("--extract", action="store_true",

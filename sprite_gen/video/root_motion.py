@@ -228,7 +228,8 @@ def retime(frames: list[Image.Image], interpolate: rife_mod.Interpolate, *, fps:
     """The cut with each air that has a take-off and a landing retimed (see the module), at `rate` cells a second.
     `times` are the frames' times in frames of the clip (for the declared contacts). Returns the frames, the record, and
     what the cut's reading needs where it was retimed (None where not): each cell's time in frames of the cut (`times`),
-    what each cell touches (`touch`), and the canvas the cells were moved on (`offset`, where the frames' (0, 0) is)."""
+    the frame each cell is, None where it was made (`source_frames`, held_fill.at_times'), what each cell touches (`touch`), and
+    the canvas the cells were moved on (`offset`, where the frames' (0, 0) is)."""
     L = len(frames)
     roots, touch = reading(frames, floor=floor, times=times, declared=declared)
     before = read(roots, touch, [k / fps for k in range(L)])
@@ -331,7 +332,7 @@ def retime(frames: list[Image.Image], interpolate: rife_mod.Interpolate, *, fps:
     record.update(applied=True, rate=rate, air=airs, made=made["made"], shown_again=made["shown_again"],
                   canvas_offset=list(offset), **held_fill_mod.reading(same))
     record["frames"] = made["frames"]
-    return out, record, {"times": at, "touch": cell_touch, "offset": offset}
+    return out, record, {"times": at, "source_frames": made["source_frames"], "touch": cell_touch, "offset": offset}
 
 
 def public(record: dict[str, Any]) -> dict[str, Any]:

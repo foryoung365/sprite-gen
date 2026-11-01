@@ -43,6 +43,8 @@ from typing import Any
 
 from PIL import Image
 
+from sprite_gen.frames import extract as extract_mod
+
 # Matte defaults converged on a 4-icon reference set (tree/bench/flower/lamp, ivory bg).
 STRENGTH_DEFAULT = 45  # LO: colour distance at/below which a border pixel is fully background
 HI_OFFSET = 60  # HI = STRENGTH + HI_OFFSET: distance at/above which a pixel is fully opaque
@@ -51,12 +53,16 @@ ERODE_DEFAULT = 1.0  # soft-erode radius (fractional part shaves the last ring t
 CHROMA_TOLERANCE = 26  # flood-fill background membership: max per-channel diff from the estimated bg colour
 CORNER_MIN_BRIGHT = 225  # a corner pixel must be at least this bright (min channel) to seed the bg colour estimate
 
-# Key colours reused from the generation contract (chroma.py KEYS). The extract
-# engine keys these out; cutout only detects them and routes.
+# The key colours, the one table: gen's `chroma.KEYS` is built from it, and the logo matte and
+# slice-sheet key by it. The extract engine keys these out; cutout only detects them and routes.
+MAGENTA, GREEN = "magenta", "green"
 KEY_TARGETS: dict[str, tuple[int, int, int]] = {
-    "magenta": (255, 0, 255),
-    "green": (0, 255, 0),
+    MAGENTA: (255, 0, 255),
+    GREEN: (0, 255, 0),
 }
+# `--key`: auto reads the corners; white is the position matte; a key colour is the chroma engine;
+# measured is the measured matte.
+KEYS = ("auto", "white", *KEY_TARGETS, "measured")
 # extract.remove_chroma_background params — the extract CLI defaults (SSoT: extract.py argparse).
 _EXTRACT_KEY_THRESHOLD = 96.0
 _EXTRACT_FRINGE_THRESHOLD = 180.0
@@ -312,7 +318,7 @@ def _measured_route(image: Image.Image, decontam: str, requested: str) -> tuple[
     """The measured matte, its stats carrying what was asked for and what the edge pass did."""
     from sprite_gen.frames.measured_matte import measured_matte
 
-    if decontam == "palette":
+    if decontam == extract_mod.PALETTE:
         raise SystemExit(f"cutout: --decontam palette needs a chroma key background (magenta/green); "
                          f"the background was keyed as measured (asked: {requested})")
     result, stats = measured_matte(image)
@@ -320,15 +326,15 @@ def _measured_route(image: Image.Image, decontam: str, requested: str) -> tuple[
     if requested in KEY_TARGETS:
         stats["chroma_key"] = list(KEY_TARGETS[requested])
         stats["chroma_key_painted"] = list(stats["background"])
-    if decontam == "auto":
-        stats["decontam"] = {"mode": "auto", "applied": False,
+    if decontam == extract_mod.AUTO:
+        stats["decontam"] = {"mode": extract_mod.AUTO, "applied": False,
                              "reason": "the measured matte unmixes its own edge against the measured background"}
     return result, stats
 
 
 def extract_route(image: Image.Image, kind: str, *, spill_max_fraction: float | None = None,
                   spill_min_tint: float | None = None,
-                  spill_require_hue: bool = False, decontam: str = "off", decontam_fit: str = "still",
+                  spill_require_hue: bool = False, decontam: str = extract_mod.OFF, decontam_fit: str = "still",
                   decontam_palette: dict[str, Any] | None = None, decontam_edge_band: int = 0,
                   background_key: tuple[int, int, int] | None = None,
                   decontam_history: dict[str, Any] | None = None,
@@ -372,7 +378,7 @@ def extract_route(image: Image.Image, kind: str, *, spill_max_fraction: float | 
     if spill_require_hue:
         extra["spill_require_hue"] = True
     decontam_stats: dict[str, Any] = {}
-    if decontam != "off":
+    if decontam != extract_mod.OFF:
         extra.update(decontam=decontam, decontam_fit=decontam_fit, decontam_palette=decontam_palette,
                      decontam_stats=decontam_stats, decontam_edge_band=decontam_edge_band,
                      decontam_history=decontam_history)
@@ -386,7 +392,7 @@ def extract_route(image: Image.Image, kind: str, *, spill_max_fraction: float | 
         "chroma_key": list(target),
         "chroma_key_painted": list(painted),
     }
-    if decontam != "off":
+    if decontam != extract_mod.OFF:
         stats["decontam"] = decontam_stats
     return result.convert("RGBA"), stats
 
@@ -404,7 +410,7 @@ def cutout(
     spill_max_fraction: float | None = None,
     spill_min_tint: float | None = None,
     spill_require_hue: bool = False,
-    decontam: str = "off",
+    decontam: str = extract_mod.OFF,
     decontam_fit: str = "still",
     decontam_palette: dict[str, Any] | None = None,
     decontam_edge_band: int = 0,
@@ -433,9 +439,9 @@ def cutout(
     located, nothing was made transparent, or any transparent pixel keeps non-zero RGB
     (No Silent Fallback).
     """
-    if key not in ("auto", "white", "magenta", "green", "measured"):
+    if key not in KEYS:
         raise SystemExit(f"cutout: unknown key {key!r}; expected one of auto|white|magenta|green|measured")
-    if decontam not in ("off", "auto", "palette"):
+    if decontam not in extract_mod.DECONTAM_MODES:
         raise SystemExit(f"cutout: unknown decontam {decontam!r}; expected off|auto|palette")
 
     image = Image.open(input_path).convert("RGBA")
@@ -446,19 +452,19 @@ def cutout(
         route = "measured"
     if route == "measured":
         result, route_stats = _measured_route(image, decontam, key)
-    elif route in ("magenta", "green"):
+    elif route in KEY_TARGETS:
         result, route_stats = extract_route(image, route, spill_max_fraction=spill_max_fraction,
                                             spill_min_tint=spill_min_tint, spill_require_hue=spill_require_hue,
                                             decontam=decontam, decontam_fit=decontam_fit,
                                             decontam_palette=decontam_palette, decontam_edge_band=decontam_edge_band,
                                             decontam_history=decontam_history, measure_unrecognised=measure_unrecognised)
     else:
-        if decontam == "palette":
+        if decontam == extract_mod.PALETTE:
             raise SystemExit(f"cutout: --decontam {decontam} needs a chroma key background (magenta/green); "
                              f"{input_path} routed to the white matte, which has no key colour to remove")
         result, route_stats = _matte_route(image, input_path, strength, band, erode, tolerance)
-        if decontam == "auto":
-            route_stats["decontam"] = {"mode": "auto", "applied": False,
+        if decontam == extract_mod.AUTO:
+            route_stats["decontam"] = {"mode": extract_mod.AUTO, "applied": False,
                                        "reason": "the white matte has no key colour to remove"}
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -514,7 +520,7 @@ def add_arguments(p: Any) -> None:
     p.add_argument("--out", type=Path, help="output PNG (default: <input>_cutout.png)")
     p.add_argument(
         "--key",
-        choices=["auto", "white", "magenta", "green", "measured"],
+        choices=KEYS,
         default="auto",
         help="background type; auto detects from corners (white→matte, magenta/green→extract engine, any other "
         "colour→measured matte); a magenta/green background the engine does not recognise is measured too",
@@ -541,8 +547,8 @@ def add_arguments(p: Any) -> None:
     )
     p.add_argument(
         "--decontam",
-        choices=["off", "auto", "palette"],
-        default="off",
+        choices=extract_mod.DECONTAM_MODES,
+        default=extract_mod.OFF,
         help="edge decontamination on chroma routes: re-explain key-tinted edges (hair strands, outlines) "
         "with the subject's own colours. off (default) keeps the chroma engine's output; auto runs it "
         "where it applies and records why not elsewhere; palette demands it",
@@ -563,7 +569,7 @@ def run(**kwargs: object) -> int:
         erode=float(kwargs.get("erode", ERODE_DEFAULT)),  # type: ignore[arg-type]
         tolerance=int(kwargs.get("tolerance", CHROMA_TOLERANCE)),  # type: ignore[arg-type]
         white_check_dir=out_path.parent if white_check else None,
-        decontam=str(kwargs.get("decontam") or "off"),
+        decontam=str(kwargs.get("decontam") or extract_mod.OFF),
     )
     import json
 

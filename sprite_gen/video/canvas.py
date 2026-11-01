@@ -29,6 +29,10 @@ background is repainted to the exact declared key here — the pixels the
 `cutout` chroma matte erases become the pure key, the subject is untouched —
 and the padding uses that same pure key. A white/ivory base is padded with its
 own corner colour as before (no chroma key to normalize to).
+
+`--prop-plate` paints a flat magenta plate on the green key in front of the subject, a low wall for it to clear
+(`prop_plate`, sized by the subject's height), and writes its box into the report, where `video-frames --prop-plate`
+reads it to erase the plate from the clip's keyed frames.
 """
 
 from __future__ import annotations
@@ -45,9 +49,11 @@ from PIL import Image
 from sprite_gen._deps import np
 from sprite_gen.frames.cutout import KEY_TARGETS, extract_route
 from sprite_gen.frames.extract import is_border_key_candidate
+from sprite_gen.gen.facing import FACINGS
 from sprite_gen.gen.handedness import VIEWS
 from sprite_gen.spec.runio import atomic_write_text
 from sprite_gen.util.console import utf8_streams
+from sprite_gen.video import prop_plate as plate_mod
 
 SHAPE_SQUARE = "square"
 SHAPE_TALL = "tall"
@@ -432,14 +438,19 @@ def run_canvas(
     trail: float | None = None,
     fit: str = "state",
     view: str | None = None,
+    prop_plate: bool = False,
 ) -> dict[str, Any]:
     still = still.expanduser().resolve()
     if not still.is_file():
         raise SystemExit(f"video-canvas: still not found: {still}")
     if fit == "tight" and (shape is not None or headroom is not None or lead is not None or trail is not None):
         raise SystemExit("video-canvas: --fit tight picks its own shape and adds no room; drop --shape/--headroom/--lead/--trail")
+    if prop_plate and report_path is None:
+        raise SystemExit("video-canvas: --prop-plate needs --report: the plate's box is written there for video-frames --prop-plate")
     if state == "effect":
         from . import effect
+        if prop_plate:
+            raise SystemExit("video-canvas: an effect keeps its source canvas; drop --prop-plate")
         if fit != "state" or any(v is not None for v in (shape, headroom, lead, trail)):
             raise SystemExit("video-canvas: an effect keeps its source canvas and center; drop framing overrides")
         with Image.open(still) as image:
@@ -447,6 +458,10 @@ def run_canvas(
     else:
         profile = profile_for(state, shape)
         canvas, report = pad_canvas(Image.open(still), profile, facing=facing, headroom=headroom, lead=lead, trail=trail, key=key, fit=fit, view=view)
+        if prop_plate:
+            if report["key"] != "green":
+                raise SystemExit(f"video-canvas: --prop-plate paints a magenta plate on a green key; the still's key is {report['key'] or 'not a chroma key'}")
+            report["prop_plate"] = plate_mod.paint(canvas, subject_box(canvas, tuple(report["key_rgb"]), 0), facing=facing)  # type: ignore[arg-type]
     out = out.expanduser().resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_name(out.name + ".part")
@@ -454,7 +469,7 @@ def run_canvas(
     tmp.replace(out)
     if state == "effect":
         report["end_frame"] = str(effect.empty_end(out, out.with_name(out.stem + ".end.png")))
-    payload = {"kind": "sprite-gen-video-canvas-report", "still": str(still), "out": str(out), "state": state, **report}
+    payload = {"kind": plate_mod.CANVAS_REPORT, "still": str(still), "out": str(out), "state": state, **report}
     if report_path is not None:
         atomic_write_text(report_path.expanduser().resolve(), json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
     return payload
@@ -465,13 +480,14 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--out", required=True, type=Path, help="padded PNG to feed `sprite-gen video`")
     parser.add_argument("--state", help="motion state name (jump/attack/projectile/... — selects the canvas row)")
     parser.add_argument("--shape", choices=SHAPES, help="override the state's canvas shape")
-    parser.add_argument("--facing", choices=("right", "left"), default="right", help="which way the subject faces (wide canvases add room in front)")
+    parser.add_argument("--facing", choices=FACINGS, default="right", help="which way the subject faces (wide canvases add room in front)")
     parser.add_argument("--headroom", type=float, help="tall/wide: empty fraction of canvas height above the still (default from the profile)")
     parser.add_argument("--lead", type=float, help="wide: empty fraction in front of the subject (default from the profile)")
     parser.add_argument("--trail", type=float, help="wide: empty fraction behind the subject, for a weapon drawn back (default from the profile)")
     parser.add_argument("--key", choices=KEYS, default="auto", help="chroma key of the still (auto reads the corners; green/magenta are normalized to the exact key; white pads with the corner colour)")
     parser.add_argument("--fit", choices=FITS, default="state", help="state: the state's room for the motion (default); tight: drop the empty rows around the subject and add no room, so it fills the frame and a motion that leaves it is clipped")
     parser.add_argument("--view", choices=VIEWS, help="the still's view; a walk or run from the side has the still's room around its silhouette read, and its square widened by the room it lacks (`room` in the report). Left out, the room is not read")
+    parser.add_argument("--prop-plate", action="store_true", help="paint a flat magenta plate, a low wall for the subject to clear, on the ground in front of it (the side it faces), sized by its height; green key only, needs --report, where its box is written for `video-frames --prop-plate` to erase")
     parser.add_argument("--report", type=Path, help="write the canvas report JSON here")
 
 
@@ -481,6 +497,7 @@ def run(**kwargs: object) -> int:
         state=kwargs.get("state"), shape=kwargs.get("shape"), facing=str(kwargs.get("facing") or "right"),  # type: ignore[arg-type]
         headroom=kwargs.get("headroom"), lead=kwargs.get("lead"), trail=kwargs.get("trail"), report_path=kwargs.get("report"),  # type: ignore[arg-type]
         key=str(kwargs.get("key") or "auto"), fit=str(kwargs.get("fit") or "state"), view=kwargs.get("view"),  # type: ignore[arg-type]
+        prop_plate=bool(kwargs.get("prop_plate")),
     )
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0

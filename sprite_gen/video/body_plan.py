@@ -32,24 +32,24 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-PLANS = ("biped", "quadruped", "legless")
+BIPED, QUADRUPED, LEGLESS = PLANS = ("biped", "quadruped", "legless")
 SPEC_FORM = "'<biped|quadruped|legless>' for the character, or '<figure>=<plan>' per figure in a scene, e.g. 'the horse=quadruped'"
 # What each figure of a scene stands on, after its name (`text`).
 SCENE_TEXT = {
-    "biped": "on two legs",
-    "quadruped": "on all four legs, never rising onto its hind legs",
-    "legless": "without legs, never growing any",
+    BIPED: "on two legs",
+    QUADRUPED: "on all four legs, never rising onto its hind legs",
+    LEGLESS: "without legs, never growing any",
 }
 # One figure, after the motion sentence (`text`). A biped says nothing: the measured sentences are its own.
 ONE_TEXT = {
-    "quadruped": "It stays on all four legs, as in the image, and never rises onto its hind legs.",
-    "legless": "It has no legs, as in the image, and never grows legs or feet.",
+    QUADRUPED: "It stays on all four legs, as in the image, and never rises onto its hind legs.",
+    LEGLESS: "It has no legs, as in the image, and never grows legs or feet.",
 }
 # One figure, at the end of the view sentence a still is drawn with (`still_text`): the still may be drawn
 # from words alone, so it says what the body stands on rather than "as in the image".
 STILL_ONE_TEXT = {
-    "quadruped": "standing on all four legs, not rearing onto its hind legs",
-    "legless": "resting on its base without legs, never growing any",
+    QUADRUPED: "standing on all four legs, not rearing onto its hind legs",
+    LEGLESS: "resting on its base without legs, never growing any",
 }
 
 
@@ -82,12 +82,12 @@ def parse_all(specs: list[str] | None) -> list[Body]:
 
 def biped(bodies: list[Body] | None) -> bool:
     """Whether every figure stands on two legs (no body named is a biped): the measured sentences apply."""
-    return all(b.plan == "biped" for b in bodies or [])
+    return all(b.plan == BIPED for b in bodies or [])
 
 
 def legless(bodies: list[Body] | None) -> bool:
     """Whether a body is named and none of its figures has legs."""
-    return bool(bodies) and all(b.plan == "legless" for b in bodies or [])
+    return bool(bodies) and all(b.plan == LEGLESS for b in bodies or [])
 
 
 def scene(bodies: list[Body] | None) -> bool:
@@ -96,7 +96,7 @@ def scene(bodies: list[Body] | None) -> bool:
 
 def text(bodies: list[Body] | None) -> str:
     """What the subject stands on, said after the motion sentence; "" for no body or one biped."""
-    if not bodies or (not scene(bodies) and bodies[0].plan == "biped"):
+    if not bodies or (not scene(bodies) and bodies[0].plan == BIPED):
         return ""
     if not scene(bodies):
         return ONE_TEXT[bodies[0].plan]
@@ -107,7 +107,7 @@ def text(bodies: list[Body] | None) -> str:
 def still_text(bodies: list[Body] | None) -> str:
     """What the subject stands on, at the end of a still's view sentence (lower case, no full stop); "" for
     no body or one biped."""
-    if not bodies or (not scene(bodies) and bodies[0].plan == "biped"):
+    if not bodies or (not scene(bodies) and bodies[0].plan == BIPED):
         return ""
     if not scene(bodies):
         return STILL_ONE_TEXT[bodies[0].plan]

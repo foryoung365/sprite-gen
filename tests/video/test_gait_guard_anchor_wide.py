@@ -4,7 +4,9 @@
   still come back as a two-step period;
 * one-shot detection is not bound by the periodic window's lower edge;
 * `--anchor feet` removes in-canvas drift (not the step) and reports it;
-* raised-limb states get a wide canvas, and video-set can force shape/anchor.
+* raised-limb states get a wide canvas, and video-set can force shape/anchor;
+* with no --anchor, video-set cuts a searched walk or run with motion-auto and every other item with none, and
+  lists a loop's take to film again (`retake`).
 """
 from __future__ import annotations
 
@@ -243,6 +245,50 @@ def test_video_set_passes_shape_and_anchor_through(tmp_path: Path, monkeypatch, 
     if anchor == "motion-auto":
         assert payload["items"][0]["loop"]["motion_anchor"]["applied"] is False
         assert "uncorrected" in (tmp_path / "set/table.md").read_text()
+
+
+@pytest.mark.parametrize("state,play,anchor,cut", [("walk", None, None, "motion-auto"), ("run", "loop", None, "motion-auto"),
+                                                    ("cheer", None, None, "none"), ("walk", None, "none", "none"),
+                                                    ("idle", None, None, "none")])
+def test_video_set_cuts_a_searched_walk_with_motion_auto_unless_told(tmp_path: Path, monkeypatch, state, play, anchor, cut) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_canvas(base, out, *, state, shape, facing, headroom, lead, report_path, fit="state", view=None):
+        Image.new("RGB", (32, 32), (0, 255, 0)).save(out)
+        return {"shape": shape or "square", "canvas": [32, 32], "offset": [0, 0]}
+
+    def fake_frames(clip, out_dir, **kw):
+        keyed = Path(out_dir) / "keyed"
+        keyed.mkdir(parents=True, exist_ok=True)
+        return {"fps": 24.0, "frames": 30, "alpha_zero_pct_min": 0.0, "alpha_zero_pct_max": 0.0, "keyed_dir": str(keyed), "spill": {"mode": "full"}}
+
+    def fake_loop(frames_dir, out_dir, **kw):
+        seen.update(anchor=kw["anchor"], cycle_mode=kw["cycle_mode"])
+        return {"cycle": {"kind": "periodic", "length": 24, "period_global": 24, "ratio": 0.2}, "resampled_seam_ratio": 0.3, "held_fill": {"cells": 10, "poses": 10, "held_runs": [], "made": [], "before": {"cells": 10, "poses": 10, "held_runs": []}}, "n_out": 8,
+                "gif": {"file": "g"}, "webp": {"file": "w"}, "strip": {"path": "s", "drift_px": 0},
+                "retake": {"reason": "start-stop", "reasons": ["start-stop"], "start_stop": {}, "remedy": "retake"}}
+
+    def fake_video(image, prompt, out, report, *, duration, resolution, log, **pin):
+        Path(out).write_bytes(b"x")
+        Path(report).write_text("{}")
+        Path(log).write_text("")
+        return 0
+
+    monkeypatch.setattr(batch_mod.canvas_mod, "run_canvas", fake_canvas)
+    monkeypatch.setattr(batch_mod.frames_mod, "run_frames", fake_frames)
+    monkeypatch.setattr(batch_mod.loop_mod, "run_loop", fake_loop)
+    base = tmp_path / "base.png"
+    Image.new("RGB", (32, 32), (0, 255, 0)).save(base)
+    payload = batch_mod.run_set(bases={"front": base}, states=[state], root=tmp_path / "set", character=None, duration=6, resolution="720p",
+                                key="green", concurrency=1, force=False, gap=0.0, video_runner=fake_video, anchor=anchor,
+                                walk_start="as-given", **({"play": {state: play}} if play else {}))
+    assert payload["ok"] == 1, payload["items"][0].get("error")
+    assert seen["anchor"] == cut
+    assert batch_mod.anchor_for(state, seen["cycle_mode"], anchor) == cut
+    item = payload["items"][0]
+    assert item["loop"]["retake"] == {"reason": "start-stop", "reasons": ["start-stop"], "remedy": "retake"}
+    assert any(w.startswith(f"{item['item']}: film this direction again (start-stop)") for w in payload["warnings"])
+    assert "film again: start-stop" in (tmp_path / "set/table.md").read_text()
 
 
 def test_cheer_motion_template_names_no_limbs() -> None:

@@ -30,6 +30,8 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from .base import PROVIDER_GROK, PROVIDER_OPENAI
+
 CODE_PATTERN = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
 
 CONTENT_POLICY = "refused by the provider's content policy"
@@ -53,8 +55,8 @@ REDACTED = "[redacted]"
 # content. An xAI clip blocked by moderation is recognised by
 # `video.respect_moderation: false` instead (sprite_gen.gen.video).
 POLICY_CODES: dict[str, frozenset[str]] = {
-    "openai": frozenset({"moderation_blocked"}),
-    "grok": frozenset(),
+    PROVIDER_OPENAI: frozenset({"moderation_blocked"}),
+    PROVIDER_GROK: frozenset(),
 }
 
 

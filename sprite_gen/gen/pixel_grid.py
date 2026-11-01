@@ -42,11 +42,12 @@ from PIL import Image
 from sprite_gen.util.gif_utils import save_clean_gif
 from sprite_gen.util.hexcolor import parse_hex
 
+from .base import PNG_MAGIC
+
 FORMATS = ("chargrid", "json")
 KEYS = string.ascii_lowercase + string.ascii_uppercase + string.digits
 TRANSPARENT_KEY = "."
 HEX = re.compile(r"^#[0-9A-Fa-f]{6}$")
-PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 PREVIEW_COLUMNS = 8  # frames a preview row holds before the next row
 
 # PICO-8's 16 colours (lexaloffle.com/pico-8.php, the fixed palette of the console).

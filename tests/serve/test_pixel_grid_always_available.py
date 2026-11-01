@@ -76,7 +76,8 @@ def test_server_never_reports_grid_as_absent():
         "has_grid 가 조건식으로 되돌아갔다 — 조건이 곧 컨트롤 숨김이다"
     )
     # pixelUnfake 가 null 로 접히면 클라의 contractScale 이 사라진다
-    assert not re.search(r'"pixelUnfake":[^\n]*else None', SERVE), (
+    assert "Wire.PIXEL_UNFAKE:" in SERVE, "pixelUnfake 를 쓰는 줄의 모양이 바뀌었다 — 아래 부재 검사가 빈 검사가 된다"
+    assert not re.search(r"Wire\.PIXEL_UNFAKE:[^\n]*else None", SERVE), (
         "pixelUnfake 를 None 으로 접는 분기 부활 — 격자 scale 이 사라진다"
     )
 

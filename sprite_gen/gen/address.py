@@ -34,11 +34,16 @@ class Provider:
     default: str  # the documented API root, version path included
 
 
+# The four providers' names, each written once: the keys every caller and every table of them (`retry`,
+# `workflow.capabilities`) names a provider by. A host, not an image provider: `OPENAI` is the API sprite-gen calls,
+# `base.PROVIDER_OPENAI` the image provider that calls it, two names that happen to be spelled alike.
+OPENAI, XAI, ANTHROPIC, ELEVENLABS = "openai", "xai", "anthropic", "elevenlabs"
+
 PROVIDERS = {provider.name: provider for provider in (
-    Provider("openai", "SPRITE_GEN_OPENAI_BASE_URL", "https://api.openai.com/v1"),
-    Provider("xai", "SPRITE_GEN_XAI_BASE_URL", "https://api.x.ai/v1"),
-    Provider("anthropic", "SPRITE_GEN_ANTHROPIC_BASE_URL", "https://api.anthropic.com/v1"),
-    Provider("elevenlabs", "SPRITE_GEN_ELEVENLABS_BASE_URL", "https://api.elevenlabs.io/v1"),
+    Provider(OPENAI, "SPRITE_GEN_OPENAI_BASE_URL", "https://api.openai.com/v1"),
+    Provider(XAI, "SPRITE_GEN_XAI_BASE_URL", "https://api.x.ai/v1"),
+    Provider(ANTHROPIC, "SPRITE_GEN_ANTHROPIC_BASE_URL", "https://api.anthropic.com/v1"),
+    Provider(ELEVENLABS, "SPRITE_GEN_ELEVENLABS_BASE_URL", "https://api.elevenlabs.io/v1"),
 )}
 FETCH_PATH = "/sprite-gen/fetch"
 

@@ -52,6 +52,8 @@ _CLAUSE_END = re.compile(r"[.;:!?\n]+")
 
 # `facing` of a piece whose view is turned to neither side (front, back).
 NO_TURN = "neither"
+# The kind of a note in `Prompt.notes`: the caller's text says against a piece (a warning), or says it again.
+CONFLICT, REPEAT = "conflict", "repeat"
 
 
 def turns_said(text: str) -> list[tuple[str, str]]:
@@ -138,12 +140,12 @@ class Prompt:
         if facing is not None:
             for words, side in turns_said(self.caller):
                 if facing == NO_TURN:
-                    self._say("conflict", "facing", f'the text says "{words}" and the engine\'s sentence is a view '
+                    self._say(CONFLICT, "facing", f'the text says "{words}" and the engine\'s sentence is a view '
                               "turned to neither side")
                 elif side == facing:
-                    self._say("repeat", "facing", f'the text says "{words}" and so does the engine\'s sentence; it is said twice')
+                    self._say(REPEAT, "facing", f'the text says "{words}" and so does the engine\'s sentence; it is said twice')
                 else:
-                    self._say("conflict", "facing", f'the text says "{words}" and the engine\'s sentence says {facing}')
+                    self._say(CONFLICT, "facing", f'the text says "{words}" and the engine\'s sentence says {facing}')
         for item in handed or []:
             name = _ARTICLE.sub("", item.item).lower()
             for clause in _CLAUSE_END.split(self.caller):
@@ -151,9 +153,9 @@ class Prompt:
                     continue
                 sides = {side.lower() for side in _SIDE.findall(_TURN.sub(" ", clause))}
                 if item.side in sides:
-                    self._say("repeat", "handed", f"the text already says which side {item.item} is on; it is said twice")
+                    self._say(REPEAT, "handed", f"the text already says which side {item.item} is on; it is said twice")
                 elif item.other in sides:
-                    self._say("conflict", "handed", f'the text has {item.item} with "{item.other}" ("{clause.strip()}") '
+                    self._say(CONFLICT, "handed", f'the text has {item.item} with "{item.other}" ("{clause.strip()}") '
                               f"and the engine's sentence puts it on the {item.where()}")
 
     def _say(self, kind: str, about: str, text: str) -> None:
@@ -164,4 +166,4 @@ class Prompt:
 
 def note_lines(prompt: Prompt) -> list[str]:
     """`prompt.notes` as lines for stderr: a conflict is a warning, a repeat a note."""
-    return [("warning: " if note["kind"] == "conflict" else "note: ") + note["text"] for note in prompt.notes]
+    return [("warning: " if note["kind"] == CONFLICT else "note: ") + note["text"] for note in prompt.notes]

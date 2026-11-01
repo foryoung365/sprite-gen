@@ -36,6 +36,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .facing import FACINGS
+
 VIEWS = ("side", "front", "back", "front_diagonal", "back_diagonal")
 # Views turned toward a side of the picture: each is drawn facing right or left.
 LATERAL_VIEWS = frozenset({"side", "front_diagonal", "back_diagonal"})
@@ -94,7 +96,7 @@ def parse_all(specs: list[str] | None) -> list[Handed]:
 def validate_view(view: str, facing: str | None) -> None:
     if view not in VIEWS:
         raise SystemExit(f"handedness: view must be one of {', '.join(VIEWS)}, got {view!r}")
-    if view in LATERAL_VIEWS and facing not in SIDES:
+    if view in LATERAL_VIEWS and facing not in FACINGS:
         raise SystemExit(f"handedness: the {view} view is turned right or left; say which (facing right|left)")
 
 

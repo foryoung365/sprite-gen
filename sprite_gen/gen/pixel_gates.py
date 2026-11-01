@@ -64,6 +64,9 @@ OPAQUE_MIN = 128  # the alpha at which a pixel is solid, as the engine reads sol
 HEIGHT_SPREAD_MAX = 1
 WALK_CONTACT_RATIO_MIN = 0.4
 BODY_LINE_SHARE = 0.25
+# What pixel-draw draws (`--kind`, `pixel_draw.KINDS`): a sprite or an icon on a transparent background, a tile
+# that repeats, or an effect over frames of its own. The gates judge each kind by these names.
+SPRITE, ICON, TILE, EFFECT = KINDS = ("sprite", "icon", "tile", "effect")
 
 Frame = Sequence[Sequence[Pixel]]
 
@@ -103,9 +106,9 @@ def g3_alpha(frames: dict[str, Frame], kind: str) -> dict[str, Any]:
     from .chroma import RAW_ALPHA_NONE, RAW_ALPHA_REAL
 
     per = {name: _frame_alpha(frame) for name, frame in frames.items()}
-    if kind == "tile":
+    if kind == TILE:
         ok = all(m["verdict"] == RAW_ALPHA_NONE for m in per.values())
-    elif kind == "effect":
+    elif kind == EFFECT:
         ok = (any(m["opaque_pixels"] > 0 for m in per.values())
               and all(m["corners_transparent"] and (m["opaque_pixels"] == 0 or m["verdict"] == RAW_ALPHA_REAL)
                       for m in per.values()))
@@ -265,7 +268,7 @@ def g8_safe_area(frames: dict[str, Frame], kind: str, area: dict[str, Any]) -> d
     first = frames[names[0]]
     mx, my = area["margin"]
     fit = safe_area_fit([tuple(per[name]["size"]) for name in names], len(first[0]), len(first), mx, my)
-    floor = area["floor_row"] if kind == "sprite" else None
+    floor = area["floor_row"] if kind == SPRITE else None
     off_floor = {name: m["body_box"][3] - floor for name, m in per.items()
                  if floor is not None and m["body_box"] and m["body_box"][3] != floor}
     return {"warn": bool(fit["over"] or off_floor), "margin": area["margin"], "safe_area": fit["safe"],
@@ -321,16 +324,16 @@ def evaluate(frames: dict[str, Frame], *, kind: str, rule: PaletteRule, walk_cyc
     warnings: list[str] = []
     info: list[str] = []
     first = next(iter(frames.values()))
-    area = None if kind in ("tile", "effect") else safe_area(len(first[0]), len(first))
-    if kind == "tile":
+    area = None if kind in (TILE, EFFECT) else safe_area(len(first[0]), len(first))
+    if kind == TILE:
         gates["G4"] = g4_seam(frames)
         if gates["G4"]["warn"]:
             warnings.append(_g4_line(gates["G4"]))
-    elif kind != "effect":
+    elif kind != EFFECT:
         gates["G5"] = g5_isolated(frames)
         if gates["G5"]["warn"]:
             warnings.append(f"G5 {gates['G5']['isolated_pixels']} stray pixel(s) with no opaque neighbour")
-    if kind == "effect":
+    if kind == EFFECT:
         gates["G6"] = {"ok": 2 <= len(frames) <= 8 and any(frame != first for frame in frames.values()),
                        "rule": "2..8 frames with a visible change; extent, height and empty frames may differ"}
     elif len(frames) > 1:

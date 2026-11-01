@@ -13,6 +13,7 @@ import hashlib
 import json
 from pathlib import Path
 
+from sprite_gen.qa.motion import REPORT_KIND as MOTION_REPORT_KIND
 from sprite_gen.spec.assets import FrameSequence, finite, load_asset, same_identity
 
 
@@ -112,7 +113,7 @@ def bound_stride(measurement, sequence: FrameSequence) -> float:
     drive the idle state of the same atlas, and a report taken at another frame
     rate cannot drive the sequence at its native timing.
     """
-    if not isinstance(measurement, dict) or measurement.get("kind") != "sprite-gen-motion-report":
+    if not isinstance(measurement, dict) or measurement.get("kind") != MOTION_REPORT_KIND:
         raise ValueError("stride report must be a sprite-gen-motion-report")
     if measurement.get("stride_verified") is not True:
         raise ValueError("stride measurement is unverified; provide reliable contact evidence")

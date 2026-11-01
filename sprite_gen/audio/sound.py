@@ -11,15 +11,15 @@ import shutil
 import tempfile
 
 from sprite_gen.audio import cache, processing, provider, playback
-from sprite_gen.audio.manifest import event_name, load as load_sound
+from sprite_gen.audio.manifest import AUDIO_KINDS, BGM, KIND, SFX, event_name, load as load_sound
 from sprite_gen.util.cli_kwargs import namespace_from_kwargs
 
 
 def generate(*, kind, prompt, duration, event, out_dir, cache_dir=None, loop=None, target_lufs=None, crossfade=None):
-    loop = kind == 'bgm' if loop is None else loop
+    loop = kind == BGM if loop is None else loop
     request = provider.request(kind, prompt, duration, loop)
     event_name(event)
-    target = (-18.0 if kind == 'sfx' else -20.0) if target_lufs is None else float(target_lufs)
+    target = (-18.0 if kind == SFX else -20.0) if target_lufs is None else float(target_lufs)
     if not math.isfinite(target) or not -36 <= target <= -9:
         raise ValueError('target_lufs must be between -36 and -9')
     crossfade = (min(.25, float(duration)/8) if crossfade is None else float(crossfade)) if loop else 0
@@ -49,7 +49,7 @@ def generate(*, kind, prompt, duration, event, out_dir, cache_dir=None, loop=Non
         source.write_bytes(data)
         details = processing.export(source, stage, target_lufs=target, loop=loop, crossfade=crossfade)
         source.unlink()
-        manifest = {'kind': 'sprite-gen-sound', 'version': playback.VERSION, 'event': event, 'audio_kind': kind,
+        manifest = {'kind': KIND, 'version': playback.VERSION, 'event': event, 'audio_kind': kind,
                     'loop': loop, 'target_lufs': target, 'recipe': recipe, 'provider': receipt, **details}
         (stage/'sound.json').write_text(json.dumps(manifest, indent=2, allow_nan=False)+'\n')
         stage.rename(out_dir)
@@ -59,7 +59,7 @@ def generate(*, kind, prompt, duration, event, out_dir, cache_dir=None, loop=Non
 
 
 def add_arguments(parser):
-    parser.add_argument('--kind', choices=('sfx', 'bgm'), required=True)
+    parser.add_argument('--kind', choices=AUDIO_KINDS, required=True)
     prompts = parser.add_mutually_exclusive_group(required=True)
     prompts.add_argument('--prompt')
     prompts.add_argument('--prompt-file', type=Path)

@@ -363,25 +363,45 @@ def test_shape_rank_reads_no_held_side_when_the_first_choice_does_not_pop():
 # --- the set ----------------------------------------------------------------------------------
 
 @pytest.mark.slow
-def test_cycle_align_aligns_a_two_step_loop_as_the_one_cycle_it_is(held, staffless):
-    """The loop cut two steps long is one cycle: it returns half way at its second step, which is no
-    suspect (status `steps`), and it is resampled to the set's length like the rest — the set's length
-    the median of the loops as cut, nothing kept twice as long."""
+def test_cycle_align_aligns_a_two_step_loop_as_the_one_cycle_it_is(held, staffless, tmp_path):
+    """The loop cut two steps long is one cycle: where its report witnesses its cut whole cycles, it returns half way
+    at its second step, which is no suspect (status `steps`), and it is resampled to the set's length like the rest —
+    the set's length the median of the loops as cut, nothing kept twice as long. As cut here nothing witnesses either
+    loop whole cycles (the walker's body does not rise and fall, and its feet never pass): the aligner stops on both,
+    each named `held`, and a count of one each, the caller's word, aligns them as they are."""
     root, report = held
     other, plain = staffless
     lengths = [report["cycle"]["length"], plain["cycle"]["length"]]
-    out = align.align_set([root / "out", other / "out"], between="nearest")
-    two, one = out["loops"]
     target = round(float(np.median(lengths)))
+    # The same two loops, each report witnessing its cut: two steps on the screen.
+    seen = []
+    for src, name in ((root / "out", "two"), (other / "out", "one")):
+        shutil.copytree(src, tmp_path / name)
+        path = tmp_path / name / "loop.loop.report.json"
+        data = json.loads(path.read_text())
+        cycle = data["cycle"]
+        cycle["cut_witness"] = {"cut": [cycle["start"], cycle["length"]], "says": "two steps", "by": ["screen"]}
+        ((cycle.get("step_count") or {}).get("cycles") or {}).pop("unwitnessed", None)
+        path.write_text(json.dumps(data))
+        seen.append(tmp_path / name)
+    out = align.align_set(seen, between="nearest")
+    two, one = out["loops"]
     assert out["applied"] is True and out["length"] == target and two["to"] == target and one["to"] == target
     assert "cycles_kept" not in two and "cycles_kept" not in one
-    mine = [e for e in out["suspects"] if e["dir"] == str((root / "out").resolve())]
+    mine = [e for e in out["suspects"] if e["dir"] == str(seen[0].resolve())]
     assert mine and all(e["status"] == "steps" and e["steps"] == 2 and [c["cycles"] for c in e["candidates"]] == [2] for e in mine)
     assert isinstance(report["cycle"]["ratio"], float)  # a window two lengths long reads its wrap as a candidate does
-    assert json.loads((root / "out" / "loop.strip.json").read_text())["steps"] == 2
-    assert "steps" not in json.loads((other / "out" / "loop.strip.json").read_text())
+    assert json.loads((seen[0] / "loop.strip.json").read_text())["steps"] == 2
+    assert "steps" not in json.loads((seen[1] / "loop.strip.json").read_text())
+    # As cut: held, by name, until the caller counts them.
+    dirs = [root / "out", other / "out"]
+    with pytest.raises(align.CycleSuspects, match="nothing witnessed its cut whole cycles") as stopped:
+        align.align_set(dirs, between="nearest")
+    assert [e["held"]["reason"] for e in stopped.value.suspects] == [local_cycle.UNWITNESSED] * 2
+    out = align.align_set(dirs, between="nearest", cycles={str(d): 1 for d in dirs})
+    assert out["applied"] is True and out["length"] == target and all(e["status"] == "counted" for e in out["suspects"])
     # A count given for it is still the last word: one half taken out of it, no longer two steps.
-    out = align.align_set([root / "out", other / "out"], between="nearest", cycles={str(root / "out"): 2})
+    out = align.align_set(dirs, between="nearest", cycles={str(root / "out"): 2, str(other / "out"): 1})
     assert "cycle_taken" in out["loops"][0]
     assert "steps" not in json.loads((root / "out" / "loop.strip.json").read_text())
 
@@ -423,7 +443,8 @@ def test_cycle_align_writes_a_loop_without_a_held_part_as_before(tmp_path, staff
     for name in ("a", "b"):
         shutil.copytree(src / "out", tmp_path / name)
         dirs.append(tmp_path / name)
-    out = align.align_set(dirs, between="nearest")
+    # Nothing witnesses the cut whole cycles (its report holds it): counted one cycle each, as the caller says.
+    out = align.align_set(dirs, between="nearest", cycles={str(d): 1 for d in dirs})
     assert all("cycles_kept" not in row and "steps" not in row for row in out["loops"])
     for d in dirs:
         meta = json.loads((d / "loop.strip.json").read_text())

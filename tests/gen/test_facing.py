@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Facing regression contracts; all generation and vision calls are offline."""
+import argparse
 import json
 import shutil
 from pathlib import Path
@@ -45,6 +46,14 @@ def generate(tmp_path, monkeypatch, backend, **kwargs):
     monkeypatch.setattr(gen, "_make_provider", lambda *a, **kw: backend)
     return gen.generate_image("openai", "a toy robot", tmp_path / "out.png",
                               refs=[FIXTURES / "left.png"], **{"facing": "right", **kwargs})
+
+
+def test_video_loop_takes_the_facings_declared_here():
+    from sprite_gen.video import loop
+
+    parser = argparse.ArgumentParser()
+    loop.add_arguments(parser)
+    assert next(a for a in parser._actions if "--facing" in a.option_strings).choices is facing.FACINGS
 
 
 @pytest.mark.parametrize("direction", ["left", "right", "front"])

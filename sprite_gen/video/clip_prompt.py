@@ -25,22 +25,26 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from sprite_gen.frames.cutout import GREEN
+from sprite_gen.gen import prompt_parts
+from sprite_gen.gen.chroma import KEY_BACKGROUND_TEXT
 from sprite_gen.gen.facing import FACINGS
 from sprite_gen.gen import handedness as handed_mod
 from sprite_gen.gen.handedness import Handed
+from sprite_gen.gen.video import DEFAULT_MODEL  # the clip model the prompt is for unless named: gen.video's default
 from sprite_gen.video import batch as batch_mod
 from sprite_gen.video import body_plan as body_mod
+from sprite_gen.video import effect as effect_mod
 from sprite_gen.video import play as play_mod
 from sprite_gen.video.body_plan import Body
 from sprite_gen.util.console import utf8_streams
 
-DEFAULT_MODEL = "grok-imagine-video-1.5"
-START_STILL_KEYS = ("green", "magenta")
+START_STILL_KEYS = tuple(KEY_BACKGROUND_TEXT)
 
 
 def plan_prompt(*, direction: str, state: str, facing: str = "right", character: str | None = None,
                 motion: str | None = None, model: str = DEFAULT_MODEL, last_frame: bool = True,
-                unpinned: bool = False, duration: int | None = None, key: str = "green",
+                unpinned: bool = False, duration: int | None = None, key: str = GREEN,
                 handed: list[Handed] | None = None, body_plan: list[Body] | None = None, end_frame: Path | None = None,
                 play: str | None = None) -> dict[str, Any]:
     """The prompt `video-set` would send for (direction, state), and how its clip is to be cut. `handed`
@@ -80,7 +84,7 @@ def plan_prompt(*, direction: str, state: str, facing: str = "right", character:
                                         model=model, handed=handed, body_plan=body_plan, play=play)
     prompt = parts.text
     # the caller's own words (--character, --motion) against the engine's: a conflict is a warning
-    warnings += [note["text"] for note in parts.notes if note["kind"] == "conflict"]
+    warnings += [note["text"] for note in parts.notes if note["kind"] == prompt_parts.CONFLICT]
     cycle = batch_mod.cycle_for(state, direction, play, pinned=pins)
     # as video-set places and cuts: a side or diagonal view takes the facing, front and back face right
     canvas_facing = loop_facing = facing if direction in handed_mod.LATERAL_VIEWS else "right"
@@ -103,7 +107,7 @@ def plan_prompt(*, direction: str, state: str, facing: str = "right", character:
         "cycle": cycle,
         "commands": {
             # a lifetime is framed as an effect, whatever its name
-            "canvas": f"sprite-gen video-canvas --still {still} --state {'effect' if lifetime else state} --facing {canvas_facing} --out <dir>/canvas.png --report <dir>/canvas.report.json",
+            "canvas": f"sprite-gen video-canvas --still {still} --state {effect_mod.STATE if lifetime else state} --facing {canvas_facing} --out <dir>/canvas.png --report <dir>/canvas.report.json",
             "clip": f"your video tool, not sprite-gen: image-to-video from <dir>/canvas.png with this prompt, {duration} s{end}, saved as <dir>/clip.mp4",
             "frames": "sprite-gen video-frames --clip <dir>/clip.mp4 --out-dir <dir>/frames --spill auto --reference <dir>/canvas.png",
             "loop": f"sprite-gen video-loop --frames-dir <dir>/frames/keyed --out-dir <dir>/loop --fps <fps in frames.report.json> --state {state} --cycle {cycle} --facing {loop_facing} --name {direction}-{state}",
@@ -141,7 +145,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--end-frame", type=Path, help="non-loop terminal-pose canvas to pin instead of returning to the starting image")
     parser.add_argument("--no-last-frame", action="store_true", help="the clip source cannot pin an end frame (ZCRE's grok-imagine-video-1.5): states filmed pinned are refused")
     parser.add_argument("--unpinned", action="store_true", help="with --no-last-frame: film a pinned state without the pin, with a warning, instead of refusing it")
-    parser.add_argument("--key", choices=START_STILL_KEYS, default="green", help="the still's chroma key, for a front or back walk's mid-step redraw sentence (default green)")
+    parser.add_argument("--key", choices=START_STILL_KEYS, default=GREEN, help="the still's chroma key, for a front or back walk's mid-step redraw sentence (default green)")
     parser.add_argument("--json", action="store_true", help="print the whole record (prompt, duration, end-frame pin, loop cut, commands) instead of the prompt alone")
 
 
@@ -152,7 +156,7 @@ def run(**kwargs: object) -> int:
         character=kwargs.get("character"), motion=kwargs.get("motion"),  # type: ignore[arg-type]
         model=str(kwargs.get("model") or DEFAULT_MODEL), last_frame=not kwargs.get("no_last_frame"),
         unpinned=bool(kwargs.get("unpinned")), duration=(int(kwargs["duration"]) if kwargs.get("duration") else None),  # type: ignore[arg-type]
-        key=str(kwargs.get("key") or "green"),
+        key=str(kwargs.get("key") or GREEN),
         handed=handed_mod.parse_all(list(kwargs.get("handed") or [])) or None,  # type: ignore[arg-type]
         body_plan=body_mod.parse_all(list(kwargs.get("body_plan") or [])) or None,  # type: ignore[arg-type]
     )

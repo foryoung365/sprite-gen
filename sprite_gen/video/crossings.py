@@ -37,6 +37,15 @@ the loop as played showing exactly two crossings as well; `refuted` is k steps, 
 `three steps`); everything else is `uncertain`, never taken as two. `phase` is delta in frames (delta x m), the
 worst over the bounds: how far the wrap is from joining the same point of the walk.
 
+Crossings that mark cycles (`Reading.mark_cycles`, read by `local_cycle.read_cycles`): in gap mode a crossing is
+where the feet meet on the screen, and they need not meet at every pass. The far foot can pass behind the near one
+inside a run of the feet together (a pass hidden), or a foot can step toward or away from the camera and pass the
+other apart on the screen. The feet then meet once a cycle, and the interval between two crossings holds two steps —
+marked so only where the body's top line witnesses it, rising and falling twice an interval less its flow (the picture
+a step on is a cycle on's where the legs are drawn alike, and the picture drifting up and down moves the line too).
+Every count then reads two steps an interval (`per`): the step is half the interval, a cut's advance is twice the
+crossings it covers, and the loop as played shows two steps a crossing. The step range is still read on the intervals.
+
 What crossings cannot see: a hold the step range absorbs (a 13-frame step held to 17), a still run of the feet
 together as long as a pass, a wobble that reaches the reading's sides at a step's beat. They read as steps.
 """
@@ -204,10 +213,32 @@ class Reading:
         whole = [b - a + 1 for a, b in self.runs if a > 0 and b < n - 1]
         self.run_limit = ROOT2 * float(np.median(whole)) if whole else None
         middles = [(lo + hi) / 2 for lo, hi in self.crossings]
-        self.step = float(np.median(np.diff(middles))) if len(middles) >= 3 else None
+        self.interval = float(np.median(np.diff(middles))) if len(middles) >= 3 else None  # between two crossings
+        self.per = 1  # steps an interval holds: 2 where the crossings mark cycles (`mark_cycles`)
+        self.cycles: dict[str, Any] | None = None  # whether they do, as read (`mark_cycles`); None where not asked
         self.alternation: float | None = None  # sign mode: the lean's correlation one step on (`read`)
-        self.why = why if why is not None else (None if self.step is not None else
+        self.why = why if why is not None else (None if self.interval is not None else
                                                 f"{len(middles)} crossing{'s' if len(middles) != 1 else ''} in the clip: under two steps, no step range")
+
+    @property
+    def step(self) -> float | None:
+        """The walk's step, in frames: the interval between two crossings, or half of it where they mark cycles."""
+        return None if self.interval is None else self.interval / self.per
+
+    def mark_cycles(self, said: dict[str, Any]) -> None:
+        """Whether the crossings mark cycles, not steps, as read (`said`, kept in the record; `local_cycle.read_cycles`).
+        Where `said['cycles']` holds, the feet are seen to meet once a cycle — the other pass hidden, or made apart on the
+        screen — and every count is two steps an interval (`judge`, `ring_count`, `lengths`)."""
+        self.cycles = said
+        self.per = 2 if said.get("cycles") else 1
+
+    @property
+    def stands(self) -> list[tuple[int, int]]:
+        """Gap mode: the runs of the feet together longer than any pass (over `run_limit`, ROOT2 times the median run
+        the clip shows whole), whole or cut by its first or last frame — the walk standing still."""
+        if self.run_limit is None:
+            return []
+        return [(a, b) for a, b in self.runs if b - a + 1 > self.run_limit + EPS]
 
     @property
     def readable(self) -> bool:
@@ -215,13 +246,19 @@ class Reading:
 
     @property
     def overlap(self) -> float | None:
-        """Gap mode: how long the feet are seen together at a pass, over the step — the median of the runs the clip
-        shows whole. A pass is brief; past HIDE_SHARE the far foot stands behind the near one through part of the
-        step, and a pass can hide in the run. None in sign mode, or without a step or a whole run."""
+        """Gap mode: how long the feet are seen together at a pass, over the interval between two crossings — the median
+        of the runs the clip shows whole. A pass is brief; past HIDE_SHARE the far foot stands behind the near one
+        through part of the step, and a pass can hide in the run. None in sign mode, or without a step or a whole run."""
         whole = [b - a + 1 for a, b in self.runs if a > 0 and b < self.n - 1]
-        if self.mode != "gap" or self.step is None or not whole:
+        if self.mode != "gap" or self.interval is None or not whole:
             return None
-        return float(np.median(whole)) / self.step
+        return float(np.median(whole)) / self.interval
+
+    @property
+    def hides(self) -> bool:
+        """Gap mode: whether a pass can hide among the feet seen together (`overlap` over HIDE_SHARE)."""
+        overlap = self.overlap
+        return overlap is not None and overlap > HIDE_SHARE
 
     def record(self) -> dict[str, Any]:
         """The reading as the report keeps it."""
@@ -230,6 +267,11 @@ class Reading:
                                "unconfirmed": [list(r) for r in self.unconfirmed]}
         if self.step is not None:
             out["step_range"] = [round(self.step / ROOT2, 2), round(self.step, 2), round(self.step * ROOT2, 2)]
+        if self.stands:
+            out["stands"] = [list(r) for r in self.stands]
+            out["run_limit"] = round(self.run_limit, 2)
+        if self.cycles is not None:
+            out["cycles"] = self.cycles
         if self.alternation is not None:
             out["alternation"] = self.alternation
         if self.why is not None:
@@ -243,25 +285,28 @@ class Reading:
             yield sorted(pick)
 
     def ring_count(self, s: int, L: int) -> int | None:
-        """Crossings on the loop cut s/L plays, its wrap included: a check that the loop shows what the clip counts."""
+        """Steps on the loop cut s/L plays, its wrap included — a crossing each, two where the crossings mark cycles: a
+        check that the loop shows what the clip counts."""
         if self.sides is not None:
             w = self.sides[s:s + L]
-            return sum(1 for j in range(1, L) if w[j] != w[j - 1]) + (1 if w[L - 1] != w[0] else 0)
+            return self.per * (sum(1 for j in range(1, L) if w[j] != w[j - 1]) + (1 if w[L - 1] != w[0] else 0))
         if self.together is None:
             return None
         t = list(self.together[s:s + L])
         if all(t) or not any(t):
             return 0
         r = t.index(False)
-        return len(_runs(t[r:] + t[:r]))
+        return self.per * len(_runs(t[r:] + t[:r]))
 
     def _scenario(self, c: list[float], s: int, L: int) -> tuple[str, str, str, list[int], list[float], float | None]:
-        """One scenario (every bounded crossing placed): (verdict, code, why, ks, deltas, m)."""
+        """One scenario (every bounded crossing placed): (verdict, code, why, ks, deltas, the step). The step range is
+        read on the intervals between crossings, and the count is `per` steps an interval."""
         e, last = s + L, s + L - 1
         if len(c) < 3:
             return "uncertain", "no-range", "under two steps in the clip: no step range", [], [], None
         m = float(np.median(np.diff(c)))
         lo, hi = m / ROOT2, m * ROOT2
+        step = m / self.per
 
         def played(a: float, b: float) -> bool:
             return max(math.floor(a) + 1, s) <= min(math.ceil(b) - 1, last)
@@ -269,24 +314,24 @@ class Reading:
         partial = [(a, b) for a, b in self.unconfirmed if a <= last and b >= s]
         if partial:
             what = ", ".join(f"{a}..{b}" for a, b in partial)
-            return "uncertain", "partial", f"plays frames no crossing confirms ({what}): a stance, a pass the clip cut or a change it ended on", [], [], m
+            return "uncertain", "partial", f"plays frames no crossing confirms ({what}): a stance, a pass the clip cut or a change it ended on", [], [], step
         head_played, tail_played = s < c[0], last > c[-1]
         before = (c[0] - hi, min(c[0] - lo, self.head_limit))
         after = (max(c[-1] + lo, self.tail_limit), c[-1] + hi)
         if head_played and before[0] > before[1] + EPS:
-            return "uncertain", "head-stall", f"plays the clip's head: {c[0] - self.head_limit:.1f}+ frames with no crossing, over {hi:.1f}", [], [], m
+            return "uncertain", "head-stall", f"plays the clip's head: {c[0] - self.head_limit:.1f}+ frames with no crossing, over {hi:.1f}", [], [], step
         if tail_played and after[0] > after[1] + EPS:
-            return "uncertain", "tail-stall", f"plays the clip's tail: {self.tail_limit - c[-1]:.1f}+ frames with no crossing, over {hi:.1f}", [], [], m
+            return "uncertain", "tail-stall", f"plays the clip's tail: {self.tail_limit - c[-1]:.1f}+ frames with no crossing, over {hi:.1f}", [], [], step
         bad = [(a, b) for a, b in zip(c, c[1:]) if played(a, b) and not lo - EPS <= b - a <= hi + EPS]
         if bad:
             what = ", ".join(f"{a:g}->{b:g} ({b - a:.1f})" for a, b in bad)
             return ("uncertain", "step-long" if any(b - a > hi for a, b in bad) else "step-short",
-                    f"plays a step out of [{lo:.1f}, {hi:.1f}]: {what}", [], [], m)
+                    f"plays a step out of [{lo:.1f}, {hi:.1f}]: {what}", [], [], step)
         if self.run_limit is not None:
-            stands = [(a, b) for a, b in self.runs if a <= last and b >= s and b - a + 1 > self.run_limit + EPS]
+            stands = [(a, b) for a, b in self.stands if a <= last and b >= s]
             if stands:
                 what = ", ".join(f"{a}..{b}" for a, b in stands)
-                return "uncertain", "stand", f"plays a stand: feet together {what}, over {self.run_limit:.1f} frames", [], [], m
+                return "uncertain", "stand", f"plays a stand: feet together {what}, over {self.run_limit:.1f} frames", [], [], step
         heads = np.linspace(*before, OPEN_SAMPLES) if head_played else [None]
         if e <= c[-1]:
             tails: Any = [None]
@@ -298,21 +343,21 @@ class Reading:
         for x in heads:
             for y in tails:
                 cc = ([x] if x is not None else []) + list(c) + ([y] if y is not None else [])
-                advance = _phi(cc, e) - _phi(cc, s)
+                advance = self.per * (_phi(cc, e) - _phi(cc, s))
                 k = int(math.floor(advance + 0.5))
                 ks.add(k)
                 deltas.append(advance - k)
         if len(ks) > 1:
-            return "uncertain", "open-count", f"the open step leaves the count open: {sorted(ks)}", sorted(ks), deltas, m
+            return "uncertain", "open-count", f"the open step leaves the count open: {sorted(ks)}", sorted(ks), deltas, step
         k = next(iter(ks))
         if not all(SEAM_BAND[0] - EPS <= d <= SEAM_BAND[1] + EPS for d in deltas):
             return ("uncertain", "seam", f"the wrap joins points {min(deltas):+.2f}..{max(deltas):+.2f} of a step apart: it makes or hides a crossing",
-                    [k], deltas, m)
+                    [k], deltas, step)
         if k == 0:
-            return "uncertain", "no-step", "under half a step: no crossing", [k], deltas, m
+            return "uncertain", "no-step", "under half a step: no crossing", [k], deltas, step
         if k == 2:
-            return "two", "two", "two steps", [k], deltas, m
-        return "refuted", "refuted", f"{'one step' if k == 1 else f'{k} steps'}, each seen", [k], deltas, m
+            return "two", "two", "two steps", [k], deltas, step
+        return "refuted", "refuted", f"{'one step' if k == 1 else f'{k} steps'}, each seen", [k], deltas, step
 
     def judge(self, s: int, L: int) -> dict[str, Any]:
         """The cut s/L: `verdict` (two, refuted, uncertain) with its `code` and `why`, the steps it covers (`k`), the
@@ -395,7 +440,7 @@ def read(sig: dict[str, list[float]]) -> Reading:
                       sides=[int(x) for x in sides], unconfirmed=unconfirmed)
     if reading.readable:
         # The lean of feet stepping turns over every step; a body swaying or wobbling on another beat does not.
-        alternation = _alternation(sig["lean"], reading.step)
+        alternation = correlation_on(sig["lean"], reading.step)
         reading.alternation = None if alternation is None else round(alternation, 3)
         if alternation is None or alternation > ALTERNATION_MAX:
             reading.why = (f"the foot band's lean does not turn over a step on (correlation {alternation:+.2f} at "
@@ -404,13 +449,15 @@ def read(sig: dict[str, list[float]]) -> Reading:
     return reading
 
 
-def _alternation(lean: list[float], step: float) -> float | None:
-    """The lean's correlation one step on (its trend taken out), the larger at the two whole lags about `step`."""
-    x = np.asarray(lean, dtype=float)
+def correlation_on(values: list[float], span: float) -> float | None:
+    """A per-frame signal's correlation `span` frames on (its trend taken out), the larger at the two whole lags about
+    `span`: the lean's one step on (`read`), a foot cue's one interval on, and the body's top line less its flow half
+    and a quarter of an interval on (`local_cycle.read_cycles`)."""
+    x = np.asarray(values, dtype=float)
     t = np.arange(len(x))
     x = x - np.polyval(np.polyfit(t, x, 1), t)
     out = []
-    for lag in sorted({math.floor(step), math.ceil(step)}):
+    for lag in sorted({math.floor(span), math.ceil(span)}):
         a, b = x[:-lag], x[lag:]
         if lag < 1 or len(a) < 3 or a.std() < 1e-12 or b.std() < 1e-12:
             return None

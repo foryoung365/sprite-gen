@@ -8,8 +8,8 @@
   jitter of a loop that barely moves, not a jump, in any colour; a drawing moved two pixels is a jump in any colour.
 - A frame the jump repair took off the flow and could not make again (its group refused) and that stays off the flow is
   `jump_repair.unfixed`, said in a warning line; `--unfixed refuse` fails such a loop.
-- A fixed cut the clip's own crossings count an odd number of steps fails (`loop.fixed_count`), but where the clip a cut on
-  is the same picture (the count missed a crossing), as `--anchor motion-auto` exempts its own cut.
+- A fixed cut the clip's own crossings count an odd number of steps fails (`loop.fixed_count`); where they mark cycles (a
+  pass hidden, the clip an interval on the same picture), they count as `--anchor motion-auto` counts its own cut.
 - A `--seam-max` past STEP_RATIO_MAX lifts the step gate with the seam: the loop is kept and a warning line says why.
 - The seam gate's refusal says why where the warning lines know it (a part on a beat of its own), in the failure line and
   in `seam_refusal`; elsewhere its line is as it was.
@@ -27,13 +27,13 @@ import numpy as np
 import pytest
 from PIL import Image, ImageDraw
 
-from sprite_gen.video import local_cycle, repair
+from sprite_gen.video import repair
 from sprite_gen.video import loop as loop_mod
 from tests.video import test_gait_fallback as gait
 from tests.video import test_loop_overlap as overlap
 from tests.video import test_loop_repair as ponytail
 from tests.video.test_body_anchor_gate import PERIOD, _keyed, _moved, _refused, _walk
-from tests.video.test_walk_steps import _behind, _side
+from tests.video.test_walk_steps import ARMS_IN, _behind, _side
 
 JUMP = 12  # the frame of the cut moved sideways
 
@@ -232,16 +232,21 @@ def test_a_fixed_cut_the_clips_crossings_count_one_step_fails(tmp_path: Path, ca
     assert f"the clip's crossings count the fixed cut {STRIDE}/{STRIDE // 2} one step" in capsys.readouterr().err
 
 
-def test_a_fixed_cut_that_is_the_same_picture_a_cut_on_is_not_failed_on_its_count(tmp_path: Path):
-    """Seen from behind on twos, the far foot passes hidden: one crossing a cycle, and the count calls the cycle one
-    step. The clip a cut on is the same picture — no legs swapped, a crossing unseen — and the count stands aside, as it
-    does for the cut `--anchor motion-auto` takes."""
-    frames = [_behind(k, cycle=20, hold=2) for k in range(73)]
-    D = loop_mod._distances(np.stack([loop_mod._small_features(f) for f in frames]))
-    counted = loop_mod.fixed_count(frames, D, 20, 20)
-    assert counted["chosen_by"] == "caller" and counted["same_picture"]["over_step"] <= local_cycle.SAME_PICTURE_MAX
-    assert counted["cut"]["verdict"] == "uncertain" and counted["cut"]["code"] == "same-picture"
-    assert not loop_mod.odd_count({"kind": "fixed", "step_count": counted})
+def test_a_fixed_cut_of_one_cycle_whose_crossings_mark_cycles_is_counted_two_steps(tmp_path: Path):
+    """Seen from behind on twos, the far foot passes hidden: one crossing a cycle. The clip one interval on is the same
+    picture, the body rises and falls twice an interval, its arms swinging within its sides, the crossings mark cycles,
+    and the cut of one cycle is two steps — not failed, as `--anchor motion-auto` counts its own cut (the parent engine
+    counted it one step and stood the count aside). Its arms swinging past its sides, the bands they swing across move
+    on the beat, but the rows down the middle of the body read a body rising whole, and it is counted the same (the
+    engine before read the bands alone, left the crossings on steps, counted the cut one step and failed it)."""
+    for arm in (ARMS_IN, 16):
+        frames = [_behind(k, cycle=20, hold=2, arm=arm) for k in range(73)]
+        D = loop_mod._distances(np.stack([loop_mod._small_features(f) for f in frames]))
+        counted = loop_mod.fixed_count(frames, D, 20, 20)
+        assert counted["chosen_by"] == "caller" and counted["cycles"]["cycles"] is True, arm
+        assert counted["cycles"].get("unwitnessed", False) is False, arm
+        assert counted["cut"]["verdict"] == "two" and counted["cut"]["k"] == [2], arm
+        assert loop_mod.odd_count({"kind": "fixed", "step_count": counted}) is False, arm
 
 
 def test_a_wrap_a_part_on_its_own_beat_leaves_open_says_so_in_its_failure_line(tmp_path: Path):

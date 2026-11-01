@@ -8,8 +8,9 @@ from pathlib import Path
 
 from sprite_gen.gen import CODEX_UNAVAILABLE_SETTING, codex_unavailable_choice, default_is_codex
 
-from .access import probe_access
-from .catalog import FIELDS, FLOWS, GENERAL_FIELDS, MOTION_METHODS, validate_choices
+from .access import BILLING_API_CREDIT, LOGIN_UNAVAILABLE, probe_access
+from .catalog import (CURATION, FIELDS, FLOWS, GENERAL_FIELDS, IMAGE_PROVIDER, MOTION_METHOD, MOTION_METHODS, SPRITE,
+                      validate_choices)
 from .preferences import read_settings
 
 
@@ -18,7 +19,7 @@ def guide(kind: str, *, stage: str = "start", base_image: Path | None = None, re
     explicit = validate_choices(kind, choices or {})
     if stage not in ("start", "finish"):
         raise ValueError("stage must be start or finish")
-    if base_image is not None and (kind != "sprite" or not Path(base_image).is_file()):
+    if base_image is not None and (kind != SPRITE or not Path(base_image).is_file()):
         raise ValueError("--base-image must name an existing sprite reference image")
     if stage == "finish" and (result is None or not Path(result).exists()):
         raise ValueError("finish requires an existing --result file or run directory, after generation and QA")
@@ -26,9 +27,9 @@ def guide(kind: str, *, stage: str = "start", base_image: Path | None = None, re
     stored = snapshot["profiles"].get(kind, {})
     selected = {**stored, **explicit}
     sources = {key: "request" if key in explicit else "saved" for key in selected}
-    active_fields = [key for key in FLOWS[kind]["fields"] if key != "curation"]
+    active_fields = [key for key in FLOWS[kind]["fields"] if key != CURATION]
     if base_image is not None:
-        active_fields.remove("image_provider")
+        active_fields.remove(IMAGE_PROVIDER)
     questions, blocked, access = [], [], []
     # Asked once, before the first generation, and saved: what a call that names no provider does when codex cannot
     # run. The environment answers it as well; it is never asked over a saved or given answer.
@@ -43,21 +44,21 @@ def guide(kind: str, *, stage: str = "start", base_image: Path | None = None, re
         # Report both candidates while choosing, then only the services actually
         # used. One probe per provider: its images and videos share one credential.
         required = set()
-        if "image_provider" in active_fields and selected.get("image_provider"):
-            required.add(selected["image_provider"])
-        motion = MOTION_METHODS.get(selected.get("motion_method", ""))
+        if IMAGE_PROVIDER in active_fields and selected.get(IMAGE_PROVIDER):
+            required.add(selected[IMAGE_PROVIDER])
+        motion = MOTION_METHODS.get(selected.get(MOTION_METHOD, ""))
         if motion:
             required.add(motion["provider"])
-        candidates = required or set(FIELDS["image_provider"]["options"])
+        candidates = required or set(FIELDS[IMAGE_PROVIDER]["options"])
         for provider in sorted(candidates):
             state = probe_access(provider)
             access.append(state)
             if provider not in required:
                 continue
-            label = FIELDS["image_provider"]["options"].get(provider, provider)
-            if state["login"] == "unavailable":
+            label = FIELDS[IMAGE_PROVIDER]["options"].get(provider, provider)
+            if state["login"] == LOGIN_UNAVAILABLE:
                 blocked.append({"provider": provider, "reason": state["reason"]})
-            elif state["billing"] == "api-credit":
+            elif state["billing"] == BILLING_API_CREDIT:
                 if not confirm_api_billing and not any(q["field"] == "confirm_api_billing" for q in questions):
                     questions.append({"field": "confirm_api_billing", "question": f"{label} 호출에 별도 API 크레딧을 사용할까요?",
                                       "options": {"yes": "사용", "no": "구독 로그인으로 변경"}})
@@ -70,27 +71,27 @@ def guide(kind: str, *, stage: str = "start", base_image: Path | None = None, re
         missing = [field for field in active_fields if field not in selected]
         if missing:
             raise ValueError("finish requires the actual generation choices: " + ", ".join(missing))
-        if "curation" not in selected:
-            questions.append({"field": "curation", **FIELDS["curation"]})
+        if CURATION not in selected:
+            questions.append({"field": CURATION, **FIELDS[CURATION]})
         elif not stored:
             questions.append({"field": "save_defaults", "question": "이번 선택을 다음 작업에도 기본으로 사용할까요?",
                               "options": {"yes": "기본 설정으로 저장", "no": "이번에만 사용"}})
     pipeline = None
     if not any(field not in selected for field in active_fields):
-        motion = MOTION_METHODS.get(selected.get("motion_method", ""))
+        motion = MOTION_METHODS.get(selected.get(MOTION_METHOD, ""))
         pipeline = {"base_image": str(base_image) if base_image else None,
-                    "image_provider": selected.get("image_provider") if "image_provider" in active_fields else None,
-                    "generation_provider": motion["provider"] if motion else selected.get("image_provider"),
+                    IMAGE_PROVIDER: selected.get(IMAGE_PROVIDER) if IMAGE_PROVIDER in active_fields else None,
+                    "generation_provider": motion["provider"] if motion else selected.get(IMAGE_PROVIDER),
                     "steps": motion["steps"] if motion else ["gen"],
                     "doc": motion["doc"] if motion else "docs/gen.md"}
     labels = [FIELDS[key]["options"][selected[key]] for key in active_fields if key in selected]
     return {"kind": kind, "stage": stage, "status": "blocked" if blocked else "needs-input" if questions else "ready",
             "notice": " / ".join(labels), "selected": selected, "sources": sources,
             "settings_revision": snapshot["revision"], "settings_path": snapshot["path"],
-            "codex_unavailable": {"choice": codex_choice, "source": codex_choice_source},
+            CODEX_UNAVAILABLE_SETTING: {"choice": codex_choice, "source": codex_choice_source},
             "access": access, "blocked": blocked, "questions": questions, "pipeline": pipeline,
-            "curation": selected.get("curation", "ask") if stage == "finish" else "after-result",
-            "save_candidate": selected if stage == "finish" and "curation" in selected else None}
+            CURATION: selected.get(CURATION, "ask") if stage == "finish" else "after-result",
+            "save_candidate": selected if stage == "finish" and CURATION in selected else None}
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
@@ -98,7 +99,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--stage", choices=("start", "finish"), default="start")
     parser.add_argument("--base-image", type=Path)
     parser.add_argument("--result", type=Path)
-    parser.add_argument("--confirmed-access", action="append", choices=FIELDS["image_provider"]["options"], default=[])
+    parser.add_argument("--confirmed-access", action="append", choices=FIELDS[IMAGE_PROVIDER]["options"], default=[])
     parser.add_argument("--confirm-api-billing", action="store_true")
     for key, field in FIELDS.items():
         parser.add_argument("--" + key.replace("_", "-"), choices=field["options"])

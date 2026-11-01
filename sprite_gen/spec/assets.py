@@ -20,6 +20,13 @@ from pathlib import Path
 
 from PIL import Image
 
+# An external asset descriptor's kind: ordered frame files with their durations (`effects.shadow` writes one), read
+# by `load_asset`.
+ASSET_KIND = "sprite-gen-asset"
+# The video-set direction sheet's kind: `video-set-sheet` writes it (`set_sheet.KIND` is this name, as set_sheet
+# imports this module) and `load_asset` reads a descriptor that says it as one.
+SET_SHEET_KIND = "sprite-gen-video-set-sheet"
+
 
 def finite(value, name: str, *, positive=False) -> float:
     if isinstance(value, bool):
@@ -230,7 +237,7 @@ def load_asset_states(source: Path, *, state=None, fps=None, anchor=None) -> dic
             raise ValueError("asset descriptor must be an object")
         if "frame_layout" in data:
             states = list(data["frame_layout"]["rows"])
-        elif data.get("kind") == "sprite-gen-video-set-sheet":
+        elif data.get("kind") == SET_SHEET_KIND:
             states = [row["code"] for row in data["rows"]]
         elif isinstance(data.get("rows"), list) and "cell" in data:
             states = data["rows"]
@@ -271,7 +278,7 @@ def _load_asset(source, snapshot, *, state=None, fps=None, anchor=None):
             raise ValueError("asset descriptor must be an object")
         meta.update({key: data[key] for key in PLAYBACK_FIELDS if key in data})
         declared_anchor = data.get("anchor")
-        if data.get("kind") == "sprite-gen-asset":
+        if data.get("kind") == ASSET_KIND:
             if data.get("version") != 1 or state is not None:
                 raise ValueError("external asset requires version 1 and no --state")
             entries = data.get("frames")
@@ -302,7 +309,7 @@ def _load_asset(source, snapshot, *, state=None, fps=None, anchor=None):
             else:
                 durations = [1 / finite(anim.get("fps"), "atlas fps", positive=True)] * len(frames)
             meta.update(state=state, loop=anim.get("loop", True))
-        elif data.get("kind") == "sprite-gen-video-set-sheet":
+        elif data.get("kind") == SET_SHEET_KIND:
             if data.get("schema") != 1:
                 raise ValueError("direction sheet requires schema 1")
             rows = data["rows"]

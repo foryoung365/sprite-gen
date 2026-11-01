@@ -570,15 +570,20 @@ def test_the_mirrored_limits_are_the_same_numbers():
 
     js = (SRC / "breathe.js").read_text(encoding="utf-8")
     from sprite_gen.effects.breathe import WAVE_PEAK
+    from sprite_gen.frames.extract import BORDER_MIN_FRACTION, FRAME_SIDES
     for name, want in (("BREATHE_DEPTH_MAX", C.BREATHE_DEPTH_MAX),
                        ("BREATHE_BREATHS_MAX", C.BREATHE_BREATHS_MAX),
                        ("BREATHE_LAG_MAX", C.BREATHE_LAG_MAX),
                        ("BREATHE_RANGE_MAX", C.BREATHE_RANGE_MAX),
-                       ("BREATHE_WAVE_PEAK", WAVE_PEAK)):
+                       ("BREATHE_WAVE_PEAK", WAVE_PEAK),
+                       ("BREATHE_BORDER_MIN_FRACTION", BORDER_MIN_FRACTION)):
         m = re.search(rf"const {name} = ([\d.]+);", js)
         assert m, f"{name} 이 미러에 없다"
         assert float(m.group(1)) == float(want), \
             f"{name}: py={want} js={m.group(1)} — 갈리면 저장은 되는데 안 구워진다"
+    sides = re.search(r"const BREATHE_SIDES = \[(.*?)\];", js)
+    assert sides, "그림 테두리 변 목록이 미러에 없다"
+    assert [k.strip().strip('"') for k in sides.group(1).split(",")] == list(FRAME_SIDES)
     keys = re.search(r"const BREATHE_RANGE_KEYS = \[(.*?)\];", js)
     assert keys, "최소·최대 키 목록이 미러에 없다"
     assert [k.strip().strip('"') for k in keys.group(1).split(",")] == list(C.BREATHE_RANGE_KEYS)

@@ -27,6 +27,7 @@ def brightness_alpha(image: Image.Image) -> Image.Image:
 
 
 def key_frames(files: list[Path], directory: Path) -> dict[str, Any]:
+    from sprite_gen.frames import extract
     if not files:
         raise SystemExit("video-frames: no frames to convert")
     directory.mkdir(parents=True, exist_ok=True)
@@ -43,7 +44,7 @@ def key_frames(files: list[Path], directory: Path) -> dict[str, Any]:
             "alpha_zero_pct_min": min(r["alpha_zero_pct"] for r in rows),
             "alpha_zero_pct_max": max(r["alpha_zero_pct"] for r in rows),
             "specks": {"dropped": 0, "frames": 0, "policy": "off"},
-            "edge_contacts": [], "edge_policy": "off", "decontam": {"mode": "off", "applied_frames": 0},
+            "edge_contacts": [], "edge_policy": "off", "decontam": {"mode": extract.OFF, "applied_frames": 0},
             "warnings": ["Brightness alpha represents emitted light. Dark smoke becomes faint; "
                          "black cannot occlude the scene. Use chroma alpha for opaque smoke."]}
 

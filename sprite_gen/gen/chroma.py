@@ -23,22 +23,23 @@ from typing import Any
 from PIL import Image
 
 from sprite_gen._deps import np
-from sprite_gen.frames.extract import remove_chroma_background_ycbcr
+from sprite_gen.frames import extract as extract_mod
+from sprite_gen.frames.cutout import GREEN, KEY_TARGETS, MAGENTA
+from sprite_gen.frames.extract import CHROMA_YCBCR, remove_chroma_background_ycbcr
 from sprite_gen.spec.runio import atomic_save_image
 
+from .base import TRANSPARENCY_NATIVE
 
-KEYS: dict[str, dict[str, tuple[int, int, int]]] = {
-    "magenta": {"target": (255, 0, 255)},
-    "green": {"target": (0, 255, 0)},
-}
+
+KEYS: dict[str, dict[str, tuple[int, int, int]]] = {name: {"target": rgb} for name, rgb in KEY_TARGETS.items()}
 
 # The sentence that asks a model for a key background, per key. A still redrawn from a
 # reference for a clip (`video.batch.walk_start_prompt`) and a ref run whose transparency
 # `auto` planned as a chroma key (`gen.generate_image`) both end their prompt with it.
 KEY_BACKGROUND_TEXT = {
-    "green": ("The entire background is one perfectly flat, uniform pure green chroma-key fill (#00FF00) with no gradient, "
+    GREEN: ("The entire background is one perfectly flat, uniform pure green chroma-key fill (#00FF00) with no gradient, "
               "no texture, no shadow and no ground line."),
-    "magenta": ("The entire background is one perfectly flat, uniform pure magenta chroma-key fill (#FF00FF) with no "
+    MAGENTA: ("The entire background is one perfectly flat, uniform pure magenta chroma-key fill (#FF00FF) with no "
                 "gradient, no texture, no shadow and no ground line."),
 }
 
@@ -193,9 +194,9 @@ def key_transparent(
     input_path: Path,
     out_path: Path,
     *,
-    key: str = "magenta",
+    key: str = MAGENTA,
     white_check: Path | None = None,
-    decontam: str = "off",
+    decontam: str = extract_mod.OFF,
 ) -> dict[str, Any]:
     """Key a chroma-background PNG to a clean transparent RGBA PNG.
 
@@ -222,7 +223,7 @@ def key_transparent(
     warnings: list[str] = []
     decontam_stats: dict[str, Any] = {}
     # the default call keeps its pre-decontam signature, so a caller's matte stand-in still fits
-    extra = {} if decontam == "off" else {"decontam": decontam, "decontam_stats": decontam_stats}
+    extra = {} if decontam == extract_mod.OFF else {"decontam": decontam, "decontam_stats": decontam_stats}
     image = remove_chroma_background_ycbcr(source, KEYS[key]["target"], warnings, **extra)
     pixels = image.load()
     width, height = image.size
@@ -251,7 +252,7 @@ def key_transparent(
     stats: dict[str, Any] = {
         "out": str(out_path),
         "mode": "RGBA",
-        "method": "ycbcr",
+        "method": CHROMA_YCBCR,
         "size": f"{width}x{height}",
         "key": key,
         "keyed_pixels": keyed,
@@ -262,7 +263,7 @@ def key_transparent(
     }
     if warnings:
         stats["warnings"] = warnings
-    if decontam != "off":
+    if decontam != extract_mod.OFF:
         stats["decontam"] = decontam_stats
     if white_check is not None:
         stats["white_check"] = str(white_check)
@@ -329,7 +330,7 @@ def verify_native_alpha(
     stats: dict[str, Any] = {
         "out": str(out_path),
         "mode": "RGBA",
-        "method": "native",
+        "method": TRANSPARENCY_NATIVE,
         "size": f"{width}x{height}",
         "alpha_zero_pct": alpha_zero_pct,
         "partial_alpha_pct": round(partial / total * 100, 2) if total else 0.0,

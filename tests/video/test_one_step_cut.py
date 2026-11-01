@@ -26,7 +26,7 @@ import pytest
 from PIL import Image, ImageDraw
 
 from conftest import feet_unseen, rife_located
-from sprite_gen.video import align, batch, loop, period
+from sprite_gen.video import align, batch, local_cycle, loop, period
 from tests.video.test_video_pipeline import HAS_IMG2WEBP
 
 # Every test here cuts a loop, and a loop is written with img2webp: without it they skip, as the
@@ -111,8 +111,13 @@ def test_a_walk_cut_one_step_long_is_named_by_the_step_screen(slow):
     assert screen["lag"] in (CYCLE - 1, CYCLE, CYCLE + 1) and screen["ratio"] <= period.STEP_RATIO_MAX
     assert screen["depth"] >= loop.PERIODICITY_MIN and screen["pairs"] == FRAMES - screen["lag"]
     assert screen["coverage"] == round((FRAMES - screen["lag"]) / screen["lag"], 4)
-    # Nothing is cut on it, and nothing else speaks: no warning, no `steps`.
-    assert "steps" not in cycle and not any("step" in line for line in report["jolt"]["warnings"])
+    # Nothing is cut on it, and nothing else claims steps: no `steps`. The one other word is the cut witness's: the walker
+    # is carried whole on its legs, so nothing over its feet rises and falls, and on the screen its top line rises and
+    # falls with its feet: nothing witnesses the cut whole cycles, and the cut is held as the search chose it, named
+    # (`cycle-unwitnessed`); `video-set` leaves it out of its cycle alignment.
+    witness, said = cycle["cut_witness"], [line for line in report["jolt"]["warnings"] if "step" in line]
+    assert "steps" not in cycle and witness["held"] == "unwitnessed" and local_cycle.unwitnessed(cycle), witness
+    assert said == local_cycle.held_verdict(cycle) and said[0].endswith(f"({local_cycle.UNWITNESSED})"), said
 
 
 def _same_but_the_screen(a: Path, b: Path) -> None:
@@ -233,32 +238,42 @@ def _set(root: Path, side: Path) -> list[Path]:
 
 @pytest.mark.slow
 def test_cycle_align_stops_on_a_loop_that_may_be_one_step_and_names_the_count_that_settles_it(slow, tmp_path):
+    """The step screen suspects the side walk's cut; and the walker is carried whole on its legs, so the cut witness
+    held both cuts (`cycle-unwitnessed`, as `test_video_set_names_a_loop_that_may_be_one_step_and_its_table_says_so`
+    reads): alone, `video-cycle-align` reads both in the reports beside the loops and stops on both, the front walk
+    named held and the side walk held and suspected one step."""
     root, keyed, _ = slow
     whole = _keyed(tmp_path / "whole", cycle=25)
     _cut(tmp_path / "front", whole)
     dirs = _set(tmp_path, root / "out")
     with pytest.raises(align.CycleSuspects) as stop:
         align.align_set(dirs, between="nearest")
-    (entry,) = stop.value.suspects
+    front, entry = stop.value.suspects
+    assert [e["held"]["reason"] for e in (front, entry)] == [local_cycle.UNWITNESSED] * 2 and "one_step" not in front
+    assert front["dir"] == str(dirs[0].resolve()) and front["status"] == "stopped"
     assert entry["dir"] == str(dirs[1].resolve()) and entry["status"] == "stopped" and entry["candidates"] == []
     assert entry["one_step"]["lag"] in (CYCLE - 1, CYCLE, CYCLE + 1) and entry["one_step"]["report"] == str((dirs[1] / "loop.loop.report.json").resolve())
-    assert entry["settle"] == [f"--cycles {dirs[1].resolve()}=1"]
+    assert entry["settle"] == [f"--cycles {dirs[1].resolve()}={c}" for c in (1, 2)]
     assert "may be one step" in str(stop.value) and "--steps 1" in str(stop.value)
     # Nothing was rewritten: the side loop is as cut.
     assert (dirs[1] / "loop.strip.png").read_bytes() == (root / "out" / "loop.strip.png").read_bytes()
-    # warn aligns it as it is and says so; a count of one cycle settles it.
+    # warn aligns it as it is and says so; a count of one cycle in each settles it.
     out = align.align_set(dirs, between="nearest", multi_cycle="warn")
     assert out["applied"] is True and any("one step where the rest play two" in line for line in out["warnings"])
-    out = align.align_set(dirs, between="nearest", cycles={str(dirs[1]): 1})
-    assert out["applied"] is True and out["suspects"][0]["status"] == "counted"
+    out = align.align_set(dirs, between="nearest", cycles={str(d): 1 for d in dirs})
+    assert out["applied"] is True and [e["status"] for e in out["suspects"]] == ["counted"] * 2
 
 
 # --- video-set ----------------------------------------------------------------------------
 
 @pytest.mark.slow
 def test_video_set_names_a_loop_that_may_be_one_step_and_its_table_says_so(slow, tmp_path, capsys):
-    """A video-set item keeps the cut's report beside its loop directory (`<item>/loop.report.json`):
-    the alignment reads the step screen there, and the set stops on the side walk with what settles it."""
+    """A video-set item keeps the cut's report beside its loop directory (`<item>/loop.report.json`), and its row carries
+    the marks `run_set` records of its cut: the walker is carried whole on its legs, so the cut witness holds both cuts,
+    the front walk's whole cycle and the side walk's step (`cycle-unwitnessed`), and the step screen suspects the
+    side walk's. The set leaves both out of its alignment, named in words true of half a cycle and of two, and tells the
+    side walk what settles the step screen's suspicion (`--steps 1`), as `video-cycle-align` does: run on the items'
+    loops, it reads the held cuts and the step screen in the reports beside them and stops on both."""
     _, keyed, _ = slow
     rows = []
     for direction, source in (("front", _keyed(tmp_path / "whole", cycle=25)), ("side", keyed)):
@@ -268,13 +283,23 @@ def test_video_set_names_a_loop_that_may_be_one_step_and_its_table_says_so(slow,
                            anchor="motion-auto", repair="off")
         rows.append({"item": f"{direction}-walk", "direction": direction, "state": "walk", "dir": str(item), "ok": True,
                      "loop": {"cycle": lp["cycle"]["length"], "period": None, "seam_ratio": 1.0, "n_out": lp["n_out"],
+                              **({local_cycle.UNWITNESSED: True} if local_cycle.unwitnessed(lp["cycle"]) else {}),
                               **({"step_screen": lp["cycle"]["step_screen"]} if lp["cycle"]["step_screen"]["suspect"] else {})}})
     out = batch.align_gaits(rows, tmp_path, "auto", interpolate=None, between="nearest")
-    walk = out["walk"]
-    assert walk["applied"] is False and walk["reason"] == "cycle-suspects"
-    assert walk["why"].startswith("side-walk may be one step (cut it again with video-loop --steps 1 if it is)")
-    assert walk["suspects"][0]["one_step"]["report"] == str((tmp_path / "side-walk" / "loop.report.json").resolve())
-    assert "cycles not aligned" in capsys.readouterr().err
+    assert out["walk"] == {"ok": True, "applied": False, "why": "fewer than two directions left to align",
+                           "left_out": {"front-walk": [local_cycle.UNWITNESSED], "side-walk": [local_cycle.UNWITNESSED]}}
+    err = capsys.readouterr().err.splitlines()
+    front, side = (next(line for line in err if f"walk: {d}-walk left out of the cycle alignment — " in line)
+                   for d in ("front", "side"))
+    held = f"nothing witnesses its cut whole cycles ({local_cycle.UNWITNESSED}): it may hold half a cycle or two"
+    settle = "may be one step (cut it again with video-loop --steps 1 if it is)"
+    assert held in front and held in side and settle in side and settle not in front, (front, side)
+    with pytest.raises(align.CycleSuspects) as stop:
+        align.align_set([Path(r["dir"]) / "loop" for r in rows], between="nearest")
+    front, entry = stop.value.suspects
+    assert [e["held"]["reason"] for e in (front, entry)] == [local_cycle.UNWITNESSED] * 2 and "one_step" not in front
+    assert entry["one_step"]["report"] == str((tmp_path / "side-walk" / "loop.report.json").resolve())
+    assert "may be one step" in str(stop.value) and "--steps 1" in str(stop.value)
     table = batch.write_table(rows, tmp_path / "table.md")
     assert f"| {rows[1]['loop']['cycle']} (one step?) |" in table and f"| {rows[0]['loop']['cycle']} |" in table
     rows[1]["loop"] = {**rows[1]["loop"], "cycle": 42, "steps": 2}

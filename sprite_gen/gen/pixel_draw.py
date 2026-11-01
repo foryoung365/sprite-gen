@@ -62,9 +62,9 @@ from sprite_gen.spec.runio import atomic_write_text
 from sprite_gen.util.cli_kwargs import namespace_from_kwargs
 from . import anthropic_api as api
 from . import claude_login, refusal
-from .anthropic_api import ApiError, Reply
+from .anthropic_api import EFFORTS, ApiError, Reply
 from .base import announce_api_billing, flags_over_spec, print_json
-from .pixel_gates import colors_used, evaluate, safe_area
+from .pixel_gates import EFFECT, KINDS, SPRITE, TILE, colors_used, evaluate, safe_area
 from .pixel_grid import (
     FORMATS, PREVIEW_COLUMNS, Grid, Issue, PaletteRule, check_rows, frame_name_ok, frame_pixels, hold_palette,
     joined, palette_rule, parse_answer, parse_row_answers, png_bytes, preview_scale, preview_strip, read_grid_text,
@@ -82,11 +82,9 @@ DRAWN_SHOWN = 4  # frames just before a later call's own that it is shown, with 
 GRID_CHARS_PER_TOKEN = 2
 EFFECT_FRAMES_MAX = 8
 EFFECT_FRAMES = ("birth", "peak", "decay", "gone")
-KINDS = ("sprite", "icon", "tile", "effect")
 CANDIDATES_MIN, CANDIDATES_MAX, CANDIDATES_DEFAULT = 1, 6, 2
 EFFORT_CHOICES = ("medium", "high", "xhigh")
 EFFORT_DEFAULT = "high"
-EFFORTS = ("low", "medium", "high", "xhigh", "max")
 LOWER_EFFORT = {"max": "xhigh", "xhigh": "high", "high": "medium", "medium": "low"}
 MAX_TOKENS_SINGLE, MAX_TOKENS_MULTI = 32000, 64000
 MAX_TOKENS_MIN = 1024
@@ -173,7 +171,7 @@ def _refuse(message: str) -> SystemExit:
     return SystemExit(f"{VERB}: {message}")
 
 
-def _frames(value: Any, kind: str = "sprite") -> tuple[tuple[str, ...], dict[str, str]]:
+def _frames(value: Any, kind: str = SPRITE) -> tuple[tuple[str, ...], dict[str, str]]:
     """The frame names, and what each frame shows where a spec gave it (`{"name": ..., "pose": ...}`)."""
     items = [n.strip() for n in value.split(",")] if isinstance(value, str) else value
     if not isinstance(items, list) or not items:
@@ -193,9 +191,9 @@ def _frames(value: Any, kind: str = "sprite") -> tuple[tuple[str, ...], dict[str
         raise _refuse("frame names are letters, digits, '_' or '-' (at most 32): " + ", ".join(map(repr, bad)))
     if len(set(names)) != len(names):
         raise _refuse("frame names must differ: " + ", ".join(names))
-    if kind == "effect" and not 2 <= len(names) <= EFFECT_FRAMES_MAX:
+    if kind == EFFECT and not 2 <= len(names) <= EFFECT_FRAMES_MAX:
         raise _refuse(f"an effect needs 2..{EFFECT_FRAMES_MAX} frames, got {len(names)}")
-    if kind != "effect" and len(names) > FRAMES_TOTAL_MAX:
+    if kind != EFFECT and len(names) > FRAMES_TOTAL_MAX:
         raise _refuse(f"at most {FRAMES_TOTAL_MAX} frames, got {len(names)}")
     return tuple(names), poses
 
@@ -215,7 +213,7 @@ def _words(value: Any, flag: str) -> str | None:
 
 
 def _motion(motion: str | None, kind: str, frames: tuple[str, ...]) -> None:
-    if motion is not None and kind == "effect":
+    if motion is not None and kind == EFFECT:
         raise _refuse("--motion does not apply to an effect (its frames are a lifetime already)")
     if motion is not None and len(frames) < 2:
         raise _refuse(f"--motion is two or more frames in order, got {len(frames)}")
@@ -246,16 +244,16 @@ def resolve_request(args: argparse.Namespace) -> PixelRequest:
     size = merged.get("size", SIZE_DEFAULT)
     if not isinstance(size, int) or isinstance(size, bool) or not SIZE_MIN <= size <= SIZE_MAX:
         raise _refuse(f"--size is {SIZE_MIN}..{SIZE_MAX} pixels, got {size!r}")
-    kind = merged.get("kind", "sprite")
+    kind = merged.get("kind", SPRITE)
     if kind not in KINDS:
         raise _refuse(f"--kind is one of {', '.join(KINDS)}, got {kind!r}")
     frames, poses = _frames(merged["frames"], kind) if "frames" in merged else (
-        EFFECT_FRAMES if kind == "effect" else (kind,), {})
+        EFFECT_FRAMES if kind == EFFECT else (kind,), {})
     style, motion = _words(merged.get("style"), "--style"), _words(merged.get("motion"), "--motion")
     _motion(motion, kind, frames)
     duration_ms = _duration(merged.get("duration_ms", GIF_FRAME_MS))
     walk_cycle = bool(merged.get("walk_cycle", False))
-    if walk_cycle and kind == "effect":
+    if walk_cycle and kind == EFFECT:
         raise _refuse("--walk-cycle does not apply to an effect")
     if walk_cycle and len(frames) != 4:
         raise _refuse(f"--walk-cycle is four frames (contact, passing, contact, passing), got {len(frames)}")
@@ -291,7 +289,7 @@ class Part:
 def call_parts(request: PixelRequest) -> list[Part]:
     """The request's frames, FRAMES_MAX a call, in order. An effect is one call of its 2..8 frames."""
     frames = request.frames
-    if request.kind == "effect" or len(frames) <= FRAMES_MAX:
+    if request.kind == EFFECT or len(frames) <= FRAMES_MAX:
         return [Part(1, 1, frames)]
     chunks = [frames[i:i + FRAMES_MAX] for i in range(0, len(frames), FRAMES_MAX)]
     return [Part(number, len(chunks), chunk) for number, chunk in enumerate(chunks, 1)]
@@ -353,7 +351,7 @@ def safe_area_lines(request: PixelRequest) -> list[str]:
     size = request.size
     area = safe_area(size, size)
     margin, inner, floor = area["margin"][0], area["size"][0], area["floor_row"] + 1
-    sprite = request.kind == "sprite"
+    sprite = request.kind == SPRITE
     if margin == 0:
         lines = [f"Safe area: at {size}x{size} there is no margin; {'the subject' if sprite else 'the icon'} may use "
                  "the whole canvas, with the four corner pixels transparent."]
@@ -389,7 +387,7 @@ def generation_prompt(request: PixelRequest, part: Part | None = None, drawn: Gr
     frames = request.frames
     own = part.frames if part is not None else frames
     lines = [f"Draw: {request.subject}", f"Canvas: exactly {request.size}x{request.size} pixels per frame."]
-    if request.kind == "effect":
+    if request.kind == EFFECT:
         lines.append(f"Frames: {', '.join(frames)}. One effect's lifetime: appears, grows to a peak, then disappears. "
                      "Keep its origin fixed at the center of every frame. The final frame may be empty. "
                      "Share a palette with several brightness levels for the glow; extent and shape change over time.")
@@ -416,12 +414,12 @@ def generation_prompt(request: PixelRequest, part: Part | None = None, drawn: Gr
                      + " ".join(request.palette.colors) + ".")
     else:
         lines.append(f"Palette: at most {request.palette.limit} colors plus transparent.")
-    if request.kind == "tile":
+    if request.kind == TILE:
         lines.append("This is a tile: fill every pixel (no transparency) and make it repeat seamlessly in a grid, "
                      "so the left edge continues into the right edge and the top edge into the bottom edge. "
                      "No border or outline around the tile.")
         lines.append(f"Style: {request.style or TILE_STYLE}")
-    elif request.kind == "effect":
+    elif request.kind == EFFECT:
         lines.append("Background: transparent. Draw readable clusters of light; detached sparks are intentional. "
                      "No dark outline, no ground plane, no antialiasing. Use the full canvas around its fixed center.")
         if request.style:
@@ -495,7 +493,7 @@ def repair_prompt(request: PixelRequest, grid: Grid, issues: list[Issue]) -> tup
 def _kept(request: PixelRequest) -> str:
     """The safe area in the pick's words, so a margin the prompt asked for is not read as wasted canvas."""
     area = safe_area(request.size, request.size)
-    if request.kind in ("tile", "effect") or area["margin"][0] == 0:
+    if request.kind in (TILE, EFFECT) or area["margin"][0] == 0:
         return ""
     inner = area["size"][0]
     return (f", the body about the size of the central {inner}x{inner}, inside a {area['margin'][0]}-pixel margin a "
@@ -510,7 +508,7 @@ def pick_prompt(request: PixelRequest, labels: list[str]) -> str:
         "enlarged with nearest-neighbour scaling, so every square block is one pixel; the grey checkerboard stands "
         "for transparency.",
     ]
-    if request.kind == "tile":
+    if request.kind == TILE:
         lines.append("Each tile is shown alone and, to its right, repeated 3x3 so seams are visible.")
     if multi and len(request.frames) > PREVIEW_COLUMNS:
         lines.append(f"Each candidate's {len(request.frames)} frames run left to right in rows of {PREVIEW_COLUMNS}, top "
@@ -526,9 +524,9 @@ def pick_prompt(request: PixelRequest, labels: list[str]) -> str:
          if request.style else
          "- craft 1-5: pixel-art craft: clean silhouette and outline, consistent shading and light, no noise, sensible "
          "use of the canvas (5 professional, 3 acceptable indie, 1 broken).")
-        + (" For tiles, visible seams in the 3x3 repeat count against craft." if request.kind == "tile" else ""),
+        + (" For tiles, visible seams in the 3x3 repeat count against craft." if request.kind == TILE else ""),
         ("- consistency 1-5: a readable lifetime around a fixed center, with a peak and decay; "
-         "changing extent, detached sparks and an empty final frame are intentional." if request.kind == "effect" else
+         "changing extent, detached sparks and an empty final frame are intentional." if request.kind == EFFECT else
          "- consistency 1-5: the same subject, proportions and colours across frames, and the frames following one "
          f"another as one motion in their order ({request.motion})." if multi and request.motion else
          "- consistency 1-5: the same subject, proportions and colours across frames, and correct poses/directions "
@@ -981,7 +979,7 @@ class Run:
         order = list(passed)
         random.Random(_sha(self.request.to_dict())).shuffle(order)
         by_label = {label: c for label, c in zip(labels, order)}
-        sheet = pick_sheet(self.run_dir, by_label, tile=self.request.kind == "tile",
+        sheet = pick_sheet(self.run_dir, by_label, tile=self.request.kind == TILE,
                            scale=preview_scale(self.request.size))
         sheet_path = self.run_dir / "pick-sheet.png"
         sheet_path.write_bytes(sheet)
@@ -1094,18 +1092,18 @@ def write_files(directory: Path, grid: Grid, request_frames: tuple[str, ...], ki
         files["frames"][name] = f"frame-{name}.png"
     preview_strip(list(frames.values()), scale).save(directory / f"preview-x{scale}.png")
     files["preview"] = f"preview-x{scale}.png"
-    if kind == "tile":
+    if kind == TILE:
         tiled_3x3(frames[request_frames[0]], scale).save(directory / "tiled-3x3.png")
         files["tiled"] = "tiled-3x3.png"
     if len(frames) > 1:
-        save_gif(list(frames.values()), scale, directory / "anim.gif", duration_ms, loop=None if kind == "effect" else 0)
+        save_gif(list(frames.values()), scale, directory / "anim.gif", duration_ms, loop=None if kind == EFFECT else 0)
         files["gif"] = "anim.gif"
-    if kind == "effect":
+    if kind == EFFECT:
         strip = Image.new("RGBA", (grid.width * len(frames), grid.height))
         for i, pixels in enumerate(frames.values()):
             strip.paste(image_of(pixels), (i * grid.width, 0))
         strip.save(directory / "effect.strip.png")
-        meta = {"kind": "effect", "frames": len(frames), "w": grid.width, "h": grid.height,
+        meta = {"kind": EFFECT, "frames": len(frames), "w": grid.width, "h": grid.height,
                 "loop": False, "hold_last": False, "end_frame": len(frames) - 1,
                 "events": [], "blend": "add", "anchor": [grid.width / 2, grid.height / 2],
                 "delay_ms": duration_ms, "frame_names": list(frames)}
@@ -1219,14 +1217,14 @@ def _run_grid(args: argparse.Namespace) -> int:
         rule = palette_rule(args.palette or "free")
     except ValueError as exc:
         raise _refuse(str(exc)) from exc
-    kind = args.kind or "sprite"
+    kind = args.kind or SPRITE
     motion = _words(args.motion, "--motion")
     duration_ms = _duration(GIF_FRAME_MS if args.duration_ms is None else args.duration_ms)
     grid, issues = read_grid_text(text)
     if grid is not None and not (SIZE_MIN <= grid.width <= SIZE_MAX and SIZE_MIN <= grid.height <= SIZE_MAX):
         raise _refuse(f"--grid {args.grid}: {grid.width}x{grid.height}; each side is {SIZE_MIN}..{SIZE_MAX} pixels")
     frames = tuple(grid.frames) if grid is not None else ()
-    if kind == "effect" and grid is not None:
+    if kind == EFFECT and grid is not None:
         _frames(list(frames), kind)
         if args.walk_cycle:
             raise _refuse("--walk-cycle does not apply to an effect")

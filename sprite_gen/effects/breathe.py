@@ -89,8 +89,9 @@ from PIL import Image
 
 from sprite_gen._deps import np
 from sprite_gen.effects.anatomy import Anatomy, analyze
-from sprite_gen.curate.curation import (BREATHE_MODES, BREATHE_RANGE_KEYS, BREATHE_SMOOTH_DEPTH, BREATHE_SMOOTH_DEPTH_X,
-                                        BREATHE_SMOOTH_SHAPE, normalize_transform, state_breathe)
+from sprite_gen.curate.curation import (BREATHE_MODES, BREATHE_PIXEL, BREATHE_RANGE_KEYS, BREATHE_SMOOTH,
+                                        BREATHE_SMOOTH_DEPTH, BREATHE_SMOOTH_DEPTH_X, BREATHE_SMOOTH_SHAPE,
+                                        normalize_transform, state_breathe)
 from sprite_gen.frames.extract import BORDER_MIN_FRACTION, FRAME_SIDES, own_border, solid_alpha_bbox
 from sprite_gen.frames.folder import cycle_frame_ms, open_frames, publish, reference_frame
 
@@ -232,7 +233,7 @@ def breathe_range(anat: Anatomy, cfg: dict) -> dict[str, tuple[float, float]]:
     bounds = _bounds(cfg)
     if bounds is not None:
         return {"width": bounds[0], "height": bounds[1]}
-    if breathe_mode(cfg) == "smooth":
+    if breathe_mode(cfg) == BREATHE_SMOOTH:
         depth, swell = _smooth_depths(cfg)
         return {"width": (0.0, swell), "height": (0.0, depth)}
     _, norm = envelope(anat)
@@ -490,7 +491,7 @@ def _warp(frame: Image.Image, anat: Anatomy, lag: float, t: float,
     return Image.fromarray(out, "RGBA")
 
 
-SIDE_NAMES = {"top": "위", "left": "왼쪽", "right": "오른쪽"}
+SIDE_NAMES = dict(zip(FRAME_SIDES, ("위", "왼쪽", "오른쪽")))
 
 
 def _sides_off(off: dict[str, int]) -> str:
@@ -519,7 +520,7 @@ def breathe_mode(cfg: dict) -> str:
     """cfg 의 굽기 방식 — 생략은 pixel. 모르는 값을 조용히 pixel 로 굽지 않는다."""
     mode = cfg.get("mode")
     if mode is None:
-        return "pixel"
+        return BREATHE_PIXEL
     if not isinstance(mode, str) or mode not in BREATHE_MODES:
         raise SystemExit(f"breathe: mode {mode!r} 를 모른다 — {' | '.join(BREATHE_MODES)} 중 하나다.")
     return mode
@@ -1131,7 +1132,7 @@ def row_pins(anat: Anatomy, cfg: dict, frame: Image.Image, hold: np.ndarray | No
                              f"칸이 맞는다.")
         masks[flag] = mask if mask.dtype != bool and flag != "--hold-mask" else mask.astype(bool)
     hold, front, back = masks["--hold-mask"], masks["--props-mask"], masks["--props-behind-mask"]
-    smooth, rounded = breathe_mode(cfg) == "smooth", pixel_round(cfg)
+    smooth, rounded = breathe_mode(cfg) == BREATHE_SMOOTH, pixel_round(cfg)
     if not (smooth or rounded):
         raise SystemExit("breathe: 고정 칸(--hold-mask)·쥔 물건(--props-mask, --props-behind-mask)은 변위장으로 굽는 줄의 것이다 — "
                          "mode smooth, 또는 pixel 의 둥근 가슴(chest_round·arms_x). pixel 봉투 스쿼시는 가로줄을 통째로 옮겨 칸을 "
@@ -1230,7 +1231,7 @@ def _pinned(pins: Pins | None, box, x: np.ndarray, y: np.ndarray, dx: np.ndarray
 
 def pixel_round(cfg: dict) -> bool:
     """이 줄이 둥근 가슴 장을 굽나 — pixel 이고 `chest_round`·`arms_x` 중 하나가 0 보다 크다 (생략·0 은 봉투 스쿼시)."""
-    return breathe_mode(cfg) == "pixel" and bool(cfg.get("chest_round") or cfg.get("arms_x"))
+    return breathe_mode(cfg) == BREATHE_PIXEL and bool(cfg.get("chest_round") or cfg.get("arms_x"))
 
 
 def round_displacement(anat: Anatomy, cfg: dict, x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -1836,7 +1837,7 @@ def _pixel_depths(cfg: dict) -> tuple[float, float | None]:
 
 def _row_refusals(cfg: dict, anat: Anatomy, pins: Pins | None = None) -> None:
     """줄이 굽기 전에 거부되는 까닭 — 해부와 설정(과 고정 칸·쥔 물건)에만 달려 줄에 한 번 본다 (칸마다 다시 재지 않는다)."""
-    if breathe_mode(cfg) == "smooth":
+    if breathe_mode(cfg) == BREATHE_SMOOTH:
         _smooth_refusals(cfg, anat, pins)
         return
     if pixel_round(cfg):
@@ -1867,7 +1868,7 @@ def _bake_phase_pieces(frame: Image.Image, cfg: dict, phase: float, anat: Anatom
                        pins: Pins | None = None) -> tuple[Image.Image, list[int], list[int]]:
     """`_bake_phase` 와 그 칸에서 조각 번호 순의 가려진 칸 수·지어낸 칸 수 (쥔 물건은 pixel 의 둥근 가슴만 받는다 — 다른 줄은
     빈 목록). `bake_breathe_sequence` 의 `record`."""
-    if breathe_mode(cfg) == "smooth":
+    if breathe_mode(cfg) == BREATHE_SMOOTH:
         return _smooth_warp(frame, anat, cfg, phase, pins), [], []
     if pixel_round(cfg):
         return _round_warp(frame, anat, cfg, phase, pins)
@@ -2120,7 +2121,7 @@ def run(*, frames: str, out: str, mode: str | None = None, depth: float | None =
         raise SystemExit("breathe: --avoid-region 은 숨 박자를 이 칸들에서 고른다 — 루프의 한 토막(--loop-cells·--start-cell)은 "
                          "그 루프의 박자를 잇는다. 박자는 루프의 칸에서 골라 그 값을 주라")
     cfg = _cli_breathe(raw)
-    if avoid_region is not None and breathe_mode(cfg) != "smooth":
+    if avoid_region is not None and breathe_mode(cfg) != BREATHE_SMOOTH:
         raise SystemExit("breathe: --avoid-region 은 smooth 의 것이다 (--mode smooth) — pixel 숨은 진행파라 첫 칸이 쉼이 아니다")
     folder = open_frames(src_dir, out_dir, "breathe")      # 무엇을 만들거나 지우기 전에 — 실경로와 폴더 동일성으로 본다
     images = folder.images

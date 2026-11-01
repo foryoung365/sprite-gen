@@ -124,6 +124,10 @@ def asked(fake: FakeClaude) -> list[str]:
     return [call_id for call_id, _ in fake.asked]
 
 
+def test_the_effort_order_is_the_api_s() -> None:
+    assert pixel_draw.EFFORTS is api.EFFORTS
+
+
 def test_one_candidate_is_drawn_checked_and_written(tmp_path, claude, capsys):
     fake = claude({"c1-gen1": reply(SPRITE16, output=2515, thinking=2300)})
     out = tmp_path / "run"

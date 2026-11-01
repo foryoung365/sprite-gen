@@ -89,7 +89,7 @@ def test_the_mirrored_round_keys_are_the_same() -> None:
     """큐레이터가 아는 둥근 가슴 키·상한·읽는 모양 값이 굽기와 같아야 한다 — 갈리면 웹뷰가 굽기가 받는 줄을 거부된
     줄로 들고 있거나, 굽기가 거부하는 줄을 받아 되쓴다."""
     js = (CURATOR_DIR / "src" / "store.js").read_text(encoding="utf-8")
-    keys = re.search(r"const BREATHE_ROUND_KEYS = \[(.*?)\];", js)
+    keys = re.search(r"const BREATHE_ROUND_KEYS = \[(.*?)\];", (CURATOR_DIR / "src" / "breathe.js").read_text(encoding="utf-8"))
     top = re.search(r"const BREATHE_ROUND_MAX = ([0-9.]+);", js)
     shape = re.search(r"const BREATHE_ROUND_SHAPE = \[(.*?)\];", js)
     assert keys and top and shape, "둥근 가슴 키가 미러에 없다"

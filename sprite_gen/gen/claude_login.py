@@ -59,7 +59,7 @@ LOGIN_HINT = "`claude` then `/login` signs your Claude subscription in"
 # would win over `--effort`, and the calling Claude Code session's own variables (an agent running
 # this tool must not make the child part of its session). `CLAUDE_CODE_*` are Claude Code's; the
 # documented ones that choose how it signs in stay.
-CHILD_DROP = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDECODE", "CLAUDE_PID", "CLAUDE_EFFORT")
+CHILD_DROP = (api.AUTH_ENV, "ANTHROPIC_AUTH_TOKEN", "CLAUDECODE", "CLAUDE_PID", "CLAUDE_EFFORT")
 CHILD_KEEP = ("CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
               "CLAUDE_CODE_USE_FOUNDRY")
 

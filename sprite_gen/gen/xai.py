@@ -20,11 +20,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from . import refusal, retry
+from . import address, refusal, retry
 from .base import LOGINS_ENV, env_api_key, logins_on
 
 AUTH_ENV = "XAI_API_KEY"
-AUTH_SOURCE_API_KEY = "XAI_API_KEY"
+AUTH_SOURCE_API_KEY = AUTH_ENV
 AUTH_SOURCE_GROK_LOGIN = "grok-login"
 HTTP_TIMEOUT_SECONDS = 120
 
@@ -153,7 +153,7 @@ def post(call: HttpCall, url: str, token: str, body: dict, *, who: str, label: s
     """POST `body` with `call` (as http_json), and again after a refusal `retry` sends again within `deadline`,
     the call's time limit (which `call` reads by only when the caller hands it too): (status, answer, sends).
     xAI documents 429 alone as a request not taken, and no retry-after, so http_json keeps no headers."""
-    status, reply, _headers, sends = retry.ask(lambda: (*call("POST", url, token, body), None), provider="xai",
+    status, reply, _headers, sends = retry.ask(lambda: (*call("POST", url, token, body), None), provider=address.XAI,
                                                who=who, label=label, sleep=sleep, kind=refusal.provider_code,
                                                deadline=deadline)
     return status, reply, sends

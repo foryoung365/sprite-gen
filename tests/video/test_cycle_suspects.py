@@ -288,21 +288,31 @@ def _cut(root: Path, name: str, stride: int, length: int, state: str = "walk", *
 
 
 def _set(tmp_path: Path) -> list[Path]:
-    """S and E one stride each; NE two strides of 15 (30 frames), as a two-cycle cut leaves it."""
+    """S and E one stride each; NE two strides of 15 (30 frames), as a two-cycle cut leaves it. NE's cut report, beside
+    it as video-loop writes it, holds its cut: nothing witnesses it whole cycles."""
     return [_cut(tmp_path, "S", 24, 24), _cut(tmp_path, "E", 24, 24), _cut(tmp_path, "NE", 15, 30, twos=True)]
 
 
 @pytest.mark.slow
-def test_a_set_with_a_suspect_is_stopped_before_anything_is_rewritten(tmp_path):
+@pytest.mark.parametrize("kept", [True, False])
+def test_a_set_with_a_suspect_is_stopped_before_anything_is_rewritten(tmp_path, kept):
+    """NE returns at 15 of its 30 frames: it may hold two cycles. With its cut report beside it, it is also named for
+    what the report holds (`held`: nothing witnessed its cut whole cycles); without one (a loop cut by other means),
+    only for its return."""
     dirs = _set(tmp_path)
+    report_beside = dirs[2] / "walk.loop.report.json"
+    if not kept:
+        report_beside.unlink()
     before = [(d / "walk.strip.png").read_bytes() for d in dirs]
-    with pytest.raises(align.CycleSuspects, match=r"NE: may hold 2 cycles of 15 frames \(0\.625 s\)") as stopped:
+    said = (r"NE: nothing witnessed its cut whole cycles \(cycle-unwitnessed, in [^)]*\): it may hold half a cycle, one or "
+            r"two .*; it may also hold 2 cycles of 15 frames \(0\.625 s\)" if kept else r"NE: may hold 2 cycles of 15 frames \(0\.625 s\)")
+    with pytest.raises(align.CycleSuspects, match=said) as stopped:
         align.align_set(dirs, interpolate=_Blend(), report_path=tmp_path / "align.json")
     message = str(stopped.value)
     command = " ".join(["sprite-gen video-cycle-align", *(f"--loop-dir {d}" for d in dirs), f"--report {tmp_path / 'align.json'}",
                         f"--cycles {dirs[2]}=<1|2>"])
     assert stopped.value.command == command and command in message and "--multi-cycle warn" in message
-    assert "video-loop" not in message
+    assert ("video-loop" in message) is kept  # a held cut that may be one step is cut again; a return alone is not
     assert [(d / "walk.strip.png").read_bytes() for d in dirs] == before
     assert all(not (d / "cycle.json").exists() and "cycle_align" not in json.loads((d / "walk.strip.json").read_text()) for d in dirs)
     report = json.loads((tmp_path / "align.json").read_text())
@@ -311,6 +321,7 @@ def test_a_set_with_a_suspect_is_stopped_before_anything_is_rewritten(tmp_path):
     assert entry["dir"] == str(dirs[2]) and entry["status"] == "stopped" and entry["length"] == 30
     assert [(c["period"], c["cycles"]) for c in entry["candidates"]] == [(15, 2)]
     assert entry["settle"] == [f"--cycles {dirs[2]}=1", f"--cycles {dirs[2]}=2"]
+    assert entry.get("held") == ({"reason": local_cycle.UNWITNESSED, "report": str(report_beside.resolve())} if kept else None)
     assert stopped.value.suspects == report["suspects"]
 
 
@@ -336,7 +347,8 @@ def test_multi_cycle_warn_aligns_the_set_as_it_is_and_names_the_loop(tmp_path):
     dirs = _set(tmp_path)
     report = align.align_set(dirs, interpolate=_Blend(), multi_cycle="warn")
     assert [r["from"] for r in report["loops"]] == [24, 24, 30]
-    assert any(w.startswith(f"{dirs[2]}: may hold 2 cycles") and "--multi-cycle warn" in w for w in report["warnings"])
+    assert any(w.startswith(f"{dirs[2]}: nothing witnessed its cut whole cycles") and "it may also hold 2 cycles" in w
+               and "--multi-cycle warn" in w for w in report["warnings"])
     assert report["suspects"][0]["status"] == "warned"
 
 
@@ -400,7 +412,7 @@ def test_the_command_takes_cycles(tmp_path, monkeypatch, capsys):
     dirs = _set(tmp_path)
     monkeypatch.setattr(align.rife_mod, "Rife", _Blend)
     _Blend.describe = lambda self: {"binary": "blend"}  # type: ignore[attr-defined]
-    with pytest.raises(SystemExit, match="may hold 2 cycles"):
+    with pytest.raises(SystemExit, match="nothing witnessed its cut whole cycles .*; it may also hold 2 cycles"):
         align.main([*sum((["--loop-dir", str(d)] for d in dirs), []), "--between", "nearest"])
     assert align.main([*sum((["--loop-dir", str(d)] for d in dirs), []), "--between", "nearest", "--cycles", "NE=2"]) == 0
     out = json.loads(capsys.readouterr().out)

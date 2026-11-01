@@ -11,6 +11,10 @@ from PIL import Image
 
 from sprite_gen.video import legs
 
+# What a source identity is (`source_identity`): the ordered keyed frames a cut was read from. A source manifest
+# rebuilds one from its files (`source`) and a comparison checks a report's against it (`compare`).
+SOURCE_KIND = "keyed-frame-sequence"
+
 
 def digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
@@ -27,7 +31,7 @@ def engine_identity() -> dict[str, str]:
 
 def source_identity(files: list[Path], fps: float) -> dict[str, Any]:
     """Ordered original keyed-file bytes, before anchoring, cleanup, or size hold."""
-    return {"kind": "keyed-frame-sequence", "sha256": digest(b"".join(bytes.fromhex(digest(p.read_bytes())) for p in files)),
+    return {"kind": SOURCE_KIND, "sha256": digest(b"".join(bytes.fromhex(digest(p.read_bytes())) for p in files)),
             "frames": len(files), "fps": fps}
 
 

@@ -111,3 +111,7 @@ def test_the_workflow_reads_the_same_login(monkeypatch, login, expected):
     monkeypatch.setattr(codex_provider, "codex_login", lambda: login)
     state = probe_access("codex")
     assert {k: state[k] for k in expected} == expected
+
+
+def test_the_binary_every_codex_call_runs_is_named_as_written():
+    assert codex_provider.BINARY == "codex"

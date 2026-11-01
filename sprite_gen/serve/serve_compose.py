@@ -47,6 +47,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from sprite_gen.frames.unpack_atlas import import_png_groups
+from sprite_gen.spec.runio import REQUEST_FILENAME
 from sprite_gen.util.console import utf8_streams
 
 # The SPA assets are package data (declared in pyproject's `package-data`), so the one
@@ -63,6 +64,38 @@ CONTENT_TYPES = {
     ".png": "image/png",
     ".json": "application/json; charset=utf-8",
 }
+
+
+class Wire:
+    """Every key this server puts in a body the composer SPA (`composer/src/*.js`) reads,
+    declared once; tests/serve/test_curator_wire_keys.py holds the SPA's read of each."""
+
+    # /api/browse, /api/mount — one directory level and its entries
+    DIR = "dir"
+    ENTRIES = "entries"
+    NAME = "name"
+    PATH = "path"
+    TYPE = "type"
+    # /api/state, /api/mount
+    LANG = "lang"
+    MOUNT = "mount"
+    # /api/pick
+    CANCELLED = "cancelled"
+    FILES = "files"
+    # /api/build
+    RUN_DIR = "runDir"
+    STATES = "states"
+    FRAMES = "frames"
+    CELL = "cell"
+    # /api/open-curation
+    URL = "url"
+    # errors
+    ERROR = "error"
+    CODE = "code"
+
+
+# entries[].type — library.js draws a folder for TYPE_DIR, an image for the rest
+TYPE_DIR, TYPE_IMAGE = "dir", "image"
 
 
 def _is_under(path: Path, root: Path) -> bool:
@@ -93,12 +126,12 @@ def _list_dir(directory: Path, root: Path) -> dict:
             continue
         try:
             if entry.is_dir():
-                dirs.append({"name": entry.name, "path": str(entry), "type": "dir"})
+                dirs.append({Wire.NAME: entry.name, Wire.PATH: str(entry), Wire.TYPE: TYPE_DIR})
             elif entry.suffix.lower() in IMAGE_SUFFIXES and entry.is_file():
-                images.append({"name": entry.name, "path": str(entry), "type": "image"})
+                images.append({Wire.NAME: entry.name, Wire.PATH: str(entry), Wire.TYPE: TYPE_IMAGE})
         except OSError:
             continue
-    return {"dir": str(directory), "entries": dirs + images}
+    return {Wire.DIR: str(directory), Wire.ENTRIES: dirs + images}
 
 
 def _sanitize_state(name: str) -> str:
@@ -172,16 +205,16 @@ def native_pick(kind: str = "folder") -> dict:
     proc = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
     if proc.returncode != 0:
         if "-128" in (proc.stderr or ""):  # user canceled
-            return {"cancelled": True}
+            return {Wire.CANCELLED: True}
         raise RuntimeError(proc.stderr.strip() or "osascript failed")
     if kind == "folder":
         picked = proc.stdout.strip()
-        return {"dir": picked} if picked else {"cancelled": True}
+        return {Wire.DIR: picked} if picked else {Wire.CANCELLED: True}
     files = [line for line in proc.stdout.splitlines() if line.strip()]
     if not files:
-        return {"cancelled": True}
+        return {Wire.CANCELLED: True}
     # Mount the image's containing folder; multiple picks are assumed to share one.
-    return {"dir": str(Path(files[0]).parent), "files": files}
+    return {Wire.DIR: str(Path(files[0]).parent), Wire.FILES: files}
 
 
 def _free_port() -> int:
@@ -235,7 +268,7 @@ class ComposeHandler(BaseHTTPRequestHandler):
         # rel is like "src/tree.js" or "composer.css"; confine to COMPOSER_DIR.
         target = (COMPOSER_DIR / rel).resolve()
         if not _is_under(target, COMPOSER_DIR) or not target.is_file():
-            self._send_json({"error": "not found", "path": rel}, 404)
+            self._send_json({Wire.ERROR: "not found", Wire.PATH: rel}, 404)
             return
         self._send_file(target)
 
@@ -245,41 +278,41 @@ class ComposeHandler(BaseHTTPRequestHandler):
         if path == "/":
             index = COMPOSER_DIR / "index.html"
             if not index.is_file():
-                self._send_json({"error": f"missing composer SPA: {index}"}, 500)
+                self._send_json({Wire.ERROR: f"missing composer SPA: {index}"}, 500)
                 return
             self._send_file(index)
             return
         if path == "/api/state":
             self._send_json({
-                "lang": self.lang,
-                "mount": str(self.mount_root) if self.mount_root else None,
+                Wire.LANG: self.lang,
+                Wire.MOUNT: str(self.mount_root) if self.mount_root else None,
             })
             return
         if path == "/api/browse":
             query = parse_qs(urlparse(self.path).query)
             if self.mount_root is None:
-                self._send_json({"error": "no folder mounted"}, 409)
+                self._send_json({Wire.ERROR: "no folder mounted"}, 409)
                 return
             requested = query.get("dir", [str(self.mount_root)])[0]
             try:
                 self._send_json(_list_dir(Path(unquote(requested)), self.mount_root))
             except PermissionError as exc:
-                self._send_json({"error": str(exc)}, 403)
+                self._send_json({Wire.ERROR: str(exc)}, 403)
             except FileNotFoundError as exc:
-                self._send_json({"error": str(exc)}, 404)
+                self._send_json({Wire.ERROR: str(exc)}, 404)
             return
         if path == "/api/browse-img":
             query = parse_qs(urlparse(self.path).query)
             if self.mount_root is None:
-                self._send_json({"error": "no folder mounted"}, 409)
+                self._send_json({Wire.ERROR: "no folder mounted"}, 409)
                 return
             requested = query.get("path", [""])[0]
             target = Path(unquote(requested)).resolve()
             if not _is_under(target, self.mount_root):
-                self._send_json({"error": "outside mounted root"}, 403)
+                self._send_json({Wire.ERROR: "outside mounted root"}, 403)
                 return
             if target.suffix.lower() not in IMAGE_SUFFIXES or not target.is_file():
-                self._send_json({"error": "not an image", "path": requested}, 404)
+                self._send_json({Wire.ERROR: "not an image", Wire.PATH: requested}, 404)
                 return
             self._send_file(target)
             return
@@ -291,7 +324,7 @@ class ComposeHandler(BaseHTTPRequestHandler):
         if path.startswith("/src/") or path == "/composer.css":
             self._serve_spa_asset(path.lstrip("/"))
             return
-        self._send_json({"error": "not found", "path": path}, 404)
+        self._send_json({Wire.ERROR: "not found", Wire.PATH: path}, 404)
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
@@ -300,71 +333,71 @@ class ComposeHandler(BaseHTTPRequestHandler):
             try:
                 payload = json.loads(self.rfile.read(length) or b"{}")
             except json.JSONDecodeError:
-                self._send_json({"error": "invalid JSON body"}, 400)
+                self._send_json({Wire.ERROR: "invalid JSON body"}, 400)
                 return
             raw = (payload.get("dir") or "").strip()
             if not raw:
-                self._send_json({"error": "dir required"}, 400)
+                self._send_json({Wire.ERROR: "dir required"}, 400)
                 return
             candidate = Path(raw).expanduser().resolve()
             if not candidate.is_dir():
-                self._send_json({"error": f"not a directory: {candidate}"}, 404)
+                self._send_json({Wire.ERROR: f"not a directory: {candidate}"}, 404)
                 return
             ComposeHandler.mount_root = candidate
-            self._send_json({"mount": str(candidate), **_list_dir(candidate, candidate)})
+            self._send_json({Wire.MOUNT: str(candidate), **_list_dir(candidate, candidate)})
             return
         if path == "/api/pick":
             kind = parse_qs(urlparse(self.path).query).get("kind", ["folder"])[0]
             try:
                 self._send_json(native_pick(kind))
             except NotImplementedError as exc:
-                self._send_json({"error": str(exc), "code": "unsupported-platform"}, 501)
+                self._send_json({Wire.ERROR: str(exc), Wire.CODE: "unsupported-platform"}, 501)
             except ValueError as exc:
-                self._send_json({"error": str(exc)}, 400)
+                self._send_json({Wire.ERROR: str(exc)}, 400)
             except RuntimeError as exc:
-                self._send_json({"error": str(exc)}, 500)
+                self._send_json({Wire.ERROR: str(exc)}, 500)
             return
         if path == "/api/build":
             # Materialize the virtual session into a real run dir via the SSoT
             # importer (import_png_groups). The session is the unsaved buffer; this
             # is the one place references become bytes on disk.
             if self.mount_root is None:
-                self._send_json({"error": "no folder open"}, 409)
+                self._send_json({Wire.ERROR: "no folder open"}, 409)
                 return
             length = int(self.headers.get("Content-Length", 0))
             try:
                 payload = json.loads(self.rfile.read(length) or b"{}")
             except json.JSONDecodeError:
-                self._send_json({"error": "invalid JSON body"}, 400)
+                self._send_json({Wire.ERROR: "invalid JSON body"}, 400)
                 return
             raw_out = (payload.get("outDir") or "").strip()
             if not raw_out:
-                self._send_json({"error": "outDir required"}, 400)
+                self._send_json({Wire.ERROR: "outDir required"}, 400)
                 return
             out_dir = Path(raw_out).expanduser().resolve()
             if out_dir.exists() and any(out_dir.iterdir()):
-                self._send_json({"error": f"output dir exists and is not empty: {out_dir}",
-                                 "code": "out-dir-not-empty"}, 409)
+                self._send_json({Wire.ERROR: f"output dir exists and is not empty: {out_dir}",
+                                 Wire.CODE: "out-dir-not-empty"}, 409)
                 return
             try:
                 groups = _build_groups(payload.get("rows") or [], self.mount_root)
             except PermissionError as exc:
-                self._send_json({"error": str(exc)}, 403)
+                self._send_json({Wire.ERROR: str(exc)}, 403)
                 return
             except FileNotFoundError as exc:
-                self._send_json({"error": str(exc)}, 404)
+                self._send_json({Wire.ERROR: str(exc)}, 404)
                 return
             if not groups:
-                self._send_json({"error": "no rows with files to build"}, 400)
+                self._send_json({Wire.ERROR: "no rows with files to build"}, 400)
                 return
             out_dir.mkdir(parents=True, exist_ok=True)
             try:
                 summary = import_png_groups(out_dir, groups)
             except Exception as exc:  # surface the importer's failure, do not swallow
-                self._send_json({"error": f"build failed: {exc}"}, 500)
+                self._send_json({Wire.ERROR: f"build failed: {exc}"}, 500)
                 return
-            self._send_json({"runDir": str(out_dir), "states": summary.get("states", []),
-                             "frames": summary.get("frames", 0), "cell": summary.get("cell")})
+            self._send_json({Wire.RUN_DIR: str(out_dir), Wire.STATES: summary.get("states", []),
+                             Wire.FRAMES: summary.get("frames", 0), Wire.CELL: summary.get("cell")})
             return
         if path == "/api/open-curation":
             # Hand off to the curation view: launch a serve_curation process on the
@@ -374,11 +407,11 @@ class ComposeHandler(BaseHTTPRequestHandler):
             try:
                 payload = json.loads(self.rfile.read(length) or b"{}")
             except json.JSONDecodeError:
-                self._send_json({"error": "invalid JSON body"}, 400)
+                self._send_json({Wire.ERROR: "invalid JSON body"}, 400)
                 return
             run_dir = Path(str(payload.get("runDir", ""))).expanduser().resolve()
-            if not (run_dir / "sprite-request.json").is_file():
-                self._send_json({"error": f"not a run dir (no sprite-request.json): {run_dir}"}, 404)
+            if not (run_dir / REQUEST_FILENAME).is_file():
+                self._send_json({Wire.ERROR: f"not a run dir (no sprite-request.json): {run_dir}"}, 404)
                 return
             port = _free_port()
             subprocess.Popen(
@@ -387,11 +420,11 @@ class ComposeHandler(BaseHTTPRequestHandler):
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
             if not _wait_ready(port):
-                self._send_json({"error": "curation server did not become ready"}, 504)
+                self._send_json({Wire.ERROR: "curation server did not become ready"}, 504)
                 return
-            self._send_json({"url": f"http://127.0.0.1:{port}/"})
+            self._send_json({Wire.URL: f"http://127.0.0.1:{port}/"})
             return
-        self._send_json({"error": "not found", "path": path}, 404)
+        self._send_json({Wire.ERROR: "not found", Wire.PATH: path}, 404)
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:

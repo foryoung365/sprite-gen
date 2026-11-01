@@ -109,7 +109,7 @@ def test_the_mirrored_modes_are_the_same_list() -> None:
     from sprite_gen.curate import curation as C
     from sprite_gen.serve.serve_curation import CURATOR_DIR
 
-    js = (CURATOR_DIR / "src" / "store.js").read_text(encoding="utf-8")
+    js = (CURATOR_DIR / "src" / "breathe.js").read_text(encoding="utf-8")
     m = re.search(r"const BREATHE_MODES = \[(.*?)\];", js)
     assert m, "BREATHE_MODES 가 미러에 없다"
     assert [k.strip().strip('"') for k in m.group(1).split(",")] == list(C.BREATHE_MODES)

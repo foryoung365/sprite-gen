@@ -20,8 +20,9 @@ import numpy as np
 import pytest
 from PIL import Image, ImageDraw
 
-from sprite_gen.video import align
+from sprite_gen.video import align, legs, local_cycle
 from sprite_gen.video import loop as loop_mod
+from tests.video import test_walk_steps as walks
 
 W, H = 100, 120
 
@@ -211,14 +212,15 @@ def test_the_view_picks_the_signal_so_a_short_legged_walk_starts_on_a_strike(vie
         assert strike["foot_why"].startswith("no legs to read"), strike
 
 
-def _cut(tmp_path: Path, name: str, length: int) -> Path:
+def _cut(tmp_path: Path, name: str, length: int, cycles: int = 1, report: bool = False) -> Path:
     keyed = tmp_path / f"{name}-keyed"
     keyed.mkdir()
     for k in range(length + 6):
-        _walker(2 * math.pi * k / length).save(keyed / f"{k:04d}.png")
+        _walker(2 * math.pi * cycles * k / length).save(keyed / f"{k:04d}.png")
     out = tmp_path / name
     loop_mod.run_loop(keyed, out, fps=24.0, state="walk", min_len=None, max_len=None, n_out=None, seam_max=1000.0,
-                      name="walk", report_path=None, cycle_mode="fixed", start=0, length=length, anchor="none", repair="off")
+                      name="walk", report_path=out / "walk.loop.report.json" if report else None, cycle_mode="fixed",
+                      start=0, length=length, anchor="none", repair="off")
     return out
 
 
@@ -333,6 +335,119 @@ def test_video_set_aligns_each_gait_filmed_in_two_or_more_directions(tmp_path):
     assert rows[0]["loop"]["cycle_align"]["from"] == 20
     assert (tmp_path / "walk.cycle-align.json").is_file()
     assert batch.align_gaits(rows, tmp_path, "off") == {}
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("named, reasons", [
+    ({"retake": {"reason": "start-stop", "reasons": ["start-stop"], "remedy": "retake"}}, ["start-stop"]),
+    ({"cycle-unwitnessed": True}, ["cycle-unwitnessed"]),
+    ({"retake": {"reason": "start-stop", "reasons": ["start-stop"], "remedy": "retake"}, "cycle-unwitnessed": True},
+     ["start-stop", "cycle-unwitnessed"]),
+])
+def test_video_set_leaves_a_take_to_film_again_or_an_unwitnessed_count_out_of_the_alignment(tmp_path, capsys, named, reasons):
+    """A loop named a take to film again because the walk starts or stops in it (`retake` `start-stop`) loops no two
+    steps; a loop whose cut nothing witnesses whole cycles (`cycle-unwitnessed`, `local_cycle.unwitnessed`: its
+    crossings left on steps, or its cut held by the cut witness) may hold half a cycle or two, and aligned as one it
+    would play at twice its speed or half. Either is left out, its loop as cut, its reasons named in words true of
+    half a cycle and of two, and the rest are aligned without it. Left alone, the state is not aligned."""
+    from sprite_gen.video import batch
+
+    rows = []
+    for direction, length, extra in (("front", 20, {}), ("side", 24, {}), ("back", 19, named)):
+        item = tmp_path / f"{direction}-walk"
+        item.mkdir()
+        _cut(item, "loop", length)
+        rows.append({"item": f"{direction}-walk", "direction": direction, "state": "walk", "dir": str(item), "ok": True,
+                     "loop": {"n_out": length, **extra}})
+    out = batch.align_gaits(rows, tmp_path, "auto", interpolate=Recorder())
+    assert out["walk"]["applied"] and out["walk"]["lengths"] == [20, 24] and out["walk"]["left_out"] == {"back-walk": reasons}
+    assert [r["loop"]["n_out"] for r in rows] == [out["walk"]["length"]] * 2 + [19] and "cycle_align" not in rows[2]["loop"]
+    said = capsys.readouterr().err
+    assert ("a take to film again (start-stop)" in said) is ("start-stop" in reasons)
+    held = f"nothing witnesses its cut whole cycles ({local_cycle.UNWITNESSED}): it may hold half a cycle or two"
+    assert (held in said) is (local_cycle.UNWITNESSED in reasons) and "may be one step" not in said
+    alone = batch.align_gaits(rows[1:], tmp_path, "auto", interpolate=Recorder())
+    assert alone == {"walk": {"ok": True, "applied": False, "why": "fewer than two directions left to align",
+                              "left_out": {"back-walk": reasons}}}
+
+
+@pytest.mark.slow
+def test_video_set_leaves_a_loop_its_body_rises_and_falls_four_times_in_out_of_the_alignment(tmp_path, capsys):
+    """A walk's cut its body rises and falls four times in (`cut_witness.says` four steps, `local_cycle.four_steps`) is
+    two cycles long and stands, and its strip counts the two steps its crossings counted (`steps: 2`), which
+    `video-cycle-align` reads as one cycle, a return half way its second step: aligned so to the set's median length,
+    it would play its two cycles where the rest play one, twice as fast. `video-set` leaves it out, its loop and strip
+    as cut, named (`cycle-four-steps`), and aligns the rest without it."""
+    from sprite_gen.video import batch
+
+    rows = []
+    for direction, length, cycles in (("front", 20, 1), ("side", 24, 1), ("back", 40, 2)):
+        item = tmp_path / f"{direction}-walk"
+        item.mkdir()
+        loop = _cut(item, "loop", length, cycles=cycles)
+        named = {}
+        if cycles == 2:
+            strip = loop / "walk.strip.json"
+            strip.write_text(json.dumps({**json.loads(strip.read_text()), "steps": 2}))
+            named = {"cycle-four-steps": True}
+        rows.append({"item": f"{direction}-walk", "direction": direction, "state": "walk", "dir": str(item), "ok": True,
+                     "loop": {"n_out": length, **named}})
+    out = batch.align_gaits(rows, tmp_path, "auto", interpolate=Recorder())
+    assert out["walk"].get("lengths") == [20, 24], f"the loop of two cycles is aligned as one: {out['walk']}"
+    assert out["walk"]["applied"] and out["walk"]["left_out"] == {"back-walk": ["cycle-four-steps"]}
+    assert [r["loop"]["n_out"] for r in rows] == [out["walk"]["length"]] * 2 + [40] and "cycle_align" not in rows[2]["loop"]
+    meta = json.loads((tmp_path / "back-walk" / "loop" / "walk.strip.json").read_text())
+    assert meta["frames"] == 40 and meta["steps"] == 2 and "cycle_align" not in meta
+    assert f"four times in its cut ({local_cycle.FOUR_STEPS})" in capsys.readouterr().err
+
+
+def _drawn_four_steps() -> dict:
+    """The body's word on a cut of two cycles of a walker whose arms swing past its sides, off its frames (`cut_word`):
+    the loop `video-loop` writes where the cut it was asked for, or the one it was handed, runs two cycles long."""
+    frames = [walks._behind(k, cycle=20, hold=2) for k in range(walks.FRAMES)]
+    word = local_cycle.cut_word({**legs.strike_signals(frames), **legs.body_signals(frames)}, 40)
+    return {k: word.get(k) for k in ("says", "by")}
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("witness, reason", [({"held": "unwitnessed"}, local_cycle.UNWITNESSED),
+                                             ({"says": "four steps", "by": ["order"]}, local_cycle.FOUR_STEPS),
+                                             (_drawn_four_steps, local_cycle.FOUR_STEPS)],
+                         ids=["held", "four-steps-by-its-order", "four-steps-by-its-body"])
+def test_video_cycle_align_alone_stops_on_a_loop_whose_cut_its_report_holds_and_names_why(tmp_path, witness, reason):
+    """`video-cycle-align` run on a set's loops alone, without the rows `video-set` marks, reads the report beside each
+    loop (`align.held_cut`): a loop whose cut nothing witnessed whole cycles (`cycle-unwitnessed`) may hold half a
+    cycle or two, and one cut two cycles long where its strip counts two steps (`cycle-four-steps`) returns half way at
+    its second step, which alone reads as one cycle. Either stops the set before anything is rewritten, named under
+    `suspects` with its reason and its report, never aligned as one cycle without a word (the parent engine aligned
+    both: the first at its own length, the second at twice the speed of the rest); a count settles it. A body read as
+    four steps stops it as the order does, witnessed on the screen and over its feet; the parent engine held such a
+    cut's arms against it, and the loop that reads two cycles now stops the set as one held does."""
+    witness = witness() if callable(witness) else witness
+    four = reason == local_cycle.FOUR_STEPS
+    dirs = [_cut(tmp_path, n, L, cycles=c, report=n == "N")
+            for n, L, c in (("S", 20, 1), ("E", 24, 1), ("N", 40 if four else 28, 2 if four else 1))]
+    report = dirs[2] / "walk.loop.report.json"
+    data = json.loads(report.read_text())
+    report.write_text(json.dumps({**data, "cycle": {**data["cycle"], "cut_witness": witness}}))
+    if four:
+        strip = dirs[2] / "walk.strip.json"
+        strip.write_text(json.dumps({**json.loads(strip.read_text()), "steps": 2}))
+    before = [(d / "walk.strip.png").read_bytes() for d in dirs]
+    with pytest.raises(align.CycleSuspects) as stop:
+        align.align_set(dirs, interpolate=Recorder(), between="rife")
+    (entry,) = stop.value.suspects
+    assert entry["dir"] == str(dirs[2].resolve()) and entry["status"] == "stopped" and "one_step" not in entry
+    assert entry["held"] == {"reason": reason, "report": str(report.resolve())}
+    assert entry["settle"] == [f"--cycles {dirs[2].resolve()}={c}" for c in (1, 2)]
+    said = str(stop.value)
+    assert reason in said and "nothing witnessed some of the cuts whole cycles" in said and ("--steps 1" in said) is (not four)
+    assert [(d / "walk.strip.png").read_bytes() for d in dirs] == before
+    out = align.align_set(dirs, interpolate=Recorder(), between="rife", multi_cycle="warn")
+    assert out["applied"] is True and any(reason in line for line in out["warnings"])
+    counted = align.align_set(dirs, interpolate=Recorder(), between="rife", cycles={str(dirs[2]): 2 if four else 1})
+    assert counted["applied"] is True and counted["lengths"] == [20, 24, 20 if four else 28]
+    assert counted["suspects"][0]["status"] == "counted" and counted["suspects"][0]["held"]["reason"] == reason
 
 
 def _no_rife(monkeypatch, tmp_path: Path) -> None:

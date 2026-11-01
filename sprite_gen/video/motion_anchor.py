@@ -222,12 +222,7 @@ def correct_motion(frames: list[Image.Image], regions: list[Box], *, coarse_dx: 
     left, top = (-np.minimum(shifts.min(axis=0), 0)).tolist()
     right, bottom = np.maximum(shifts.max(axis=0), 0).tolist()
     width, height = frames[0].size
-    corrected = []
-    for frame, (dx, dy) in zip(frames, shifts.tolist()):
-        canvas = Image.new("RGBA", (width + left + right, height + top + bottom))
-        canvas.paste(frame, (left + dx, top + dy))
-        corrected.append(canvas)
-    return corrected, {
+    record = {
         "method": "masked-ncc-boundary-velocity-v1", "regions": [list(b) for b in regions],
         "region_weights": list(REGION_WEIGHTS), "search_radius_xy": list(SEARCH_RADIUS),
         "coarse_dx_px": coarse_dx, "boundary_measurements": measurements,
@@ -235,3 +230,17 @@ def correct_motion(frames: list[Image.Image], regions: list[Box], *, coarse_dx: 
         "endpoint_float_xy": endpoint_float.tolist(), "endpoint_xy": endpoint.tolist(),
         "shifts_xy": shifts.tolist(), "padding_ltrb": [left, top, right, bottom],
     }
+    corrected = []
+    for k, frame in enumerate(frames):
+        canvas = Image.new("RGBA", (width + left + right, height + top + bottom))
+        canvas.paste(frame, laid_at(record, k))
+        corrected.append(canvas)
+    return corrected, record
+
+
+def laid_at(record: dict, k: int) -> tuple[int, int]:
+    """Where `correct_motion` laid frame k of its cycle on the canvas it gives every frame (its `record`): the padding's
+    left and top, and that frame's shift."""
+    left, top = record["padding_ltrb"][:2]
+    dx, dy = record["shifts_xy"][k]
+    return left + dx, top + dy

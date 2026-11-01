@@ -163,7 +163,7 @@ def test_scale_formula_has_a_single_owner():
     """extract·웹뷰가 배율 식을 손으로 복제하지 않는다 (원칙 1).
 
     복제본은 실제로 갈렸다 — 웹뷰 사본에는 usable-height 클램프 분기가 없었다."""
-    formula = re.compile(r"cell(_state\[.height.\]|_height)\s*//\s*max\(1,\s*logical_height")
+    formula = re.compile(r"cell(_state\[(.height.|Wire\.HEIGHT)\]|_height)\s*//\s*max\(1,\s*logical_height")
     for rel in ("sprite_gen/frames/extract.py", "sprite_gen/serve/serve_curation.py"):
         source = (REPO_ROOT / rel).read_text(encoding="utf-8")
         assert not formula.search(source), (

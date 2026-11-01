@@ -9,6 +9,7 @@
 // 다른 제스처(Alt클릭 모델 선택 등)를 만들지 않는다 — 회귀 2026-07-19 maintainer
 // "보간은 클릭하면 모델선택이고 리롤은 alt클릭이고 다 지멋대로".
 
+// 값과 순서는 서버의 serve_curation.CURATOR_PROVIDERS 미러 — tests/serve/test_curation_view_contract.py 가 node 로 묶는다.
 const GEN_PROVIDERS = [
   { value: "higgsfield", label: "Higgsfield" },
   { value: "codex", label: "GPT" },

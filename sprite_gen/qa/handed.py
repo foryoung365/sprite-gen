@@ -58,6 +58,7 @@ from sprite_gen.gen.facing import FACINGS
 from sprite_gen.spec.runio import atomic_write_text
 from sprite_gen.util.hexcolor import parse_hex
 from sprite_gen.util.console import utf8_streams
+from sprite_gen.video.nonloop import GAIT_STATES
 
 # Opaque enough to be the character: the body's centre and the marker are read on these pixels.
 ALPHA_MIN = 128
@@ -99,7 +100,6 @@ FAR_FRONT_MIN = 0.1
 # In a walk or run, a far limb's item must show in at least this share of the frames: it is in view for about
 # half of each step, and a walk that never shows it has lost it.
 FAR_SHOWN_MIN = 0.25
-GAIT_STATES = ("walk", "run")
 
 
 def parse_marker(value: str) -> tuple[int, int, int]:

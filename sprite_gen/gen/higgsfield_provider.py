@@ -20,7 +20,7 @@ import time
 from pathlib import Path
 
 from . import higgsfield
-from .base import GEN_TIMEOUT_SECONDS, TRANSPARENCY_NATIVE, GenRequest, ProviderRun, publish_png
+from .base import GEN_TIMEOUT_SECONDS, PROVIDER_HIGGSFIELD, TRANSPARENCY_NATIVE, GenRequest, ProviderRun, publish_png
 
 DEFAULT_MODEL = "gpt_image_2_5"
 DEFAULT_QUALITY = "high"
@@ -99,7 +99,7 @@ def job_for(request: GenRequest) -> higgsfield.Job:
 
 
 class HiggsfieldProvider:
-    name = "higgsfield"
+    name = PROVIDER_HIGGSFIELD
     transparency = TRANSPARENCY_NATIVE
 
     def inspect_facing(self, path: Path, workdir: Path) -> tuple[str, dict]:

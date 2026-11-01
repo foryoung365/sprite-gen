@@ -55,13 +55,19 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from sprite_gen.effects.breathe import (DEFAULT_DEPTH, DEFAULT_LAG, freeze_anatomy,
                                 reference_key)
+from sprite_gen.effects import interpolate as interpolate_mod
+from sprite_gen import gen as gen_mod
+from sprite_gen.gen.base import PROVIDER_CODEX, PROVIDER_GROK, PROVIDER_HIGGSFIELD
 from sprite_gen.curate.curation import (CURATION_FILENAME, SCHEMA_VERSION, effective_logical_height,
+                                 REF_ANCHOR, REF_BASIS, REF_GUIDE,
                                  empty_curation, frame_variant, imported_ref_role,
                                  load_curation, load_curation_report, pixel_snap_scale,
                                  recolor_pick, run_revision, write_curation_atomic)
-from sprite_gen.frames.extract import heal_run, load_consistent_frames_manifest
+from sprite_gen.frames.extract import (HEAL_FAILED, HEAL_HEALED, HEAL_KEPT_STALE, HEAL_NOTES, PROGRESS_REL,
+                                       heal_run, load_consistent_frames_manifest)
 from sprite_gen.spec.layout import frames_dir_rel, raw_rel, row_frame_rel, row_orig_rel, state_frame_total
-from sprite_gen.spec.runio import load_request, publish_guard, read_guard, write_request
+from sprite_gen.spec.runio import (LOCK_FILENAME, REQUEST_FILENAME, load_request, publish_guard,
+                                   read_guard, write_request)
 from sprite_gen.util.hexcolor import parse_hex
 from sprite_gen._modules import qualified
 from sprite_gen.util.console import utf8_streams
@@ -96,6 +102,145 @@ CONTENT_TYPES = {
     ".png": "image/png",
     ".json": "application/json; charset=utf-8",
 }
+
+
+class Wire:
+    """The curator's wire: every key this server puts in a body (or header) the curator SPA
+    (`curator/src/*.js`) reads, declared once. Each body is written through these names, and
+    the server reads its own keys back through them; tests/serve/test_curator_wire_keys.py
+    holds the SPA's read of each one. A key is declared under the first object it appears in.
+    Keys other modules own arrive under their own names: the heal report and the progress
+    file (`frames.extract`), the ref roles (`curate.curation`)."""
+
+    # /api/run — the run snapshot
+    CHARACTER_ID = "characterId"
+    RUN_DIR = "runDir"
+    BASE_URL = "baseUrl"
+    CELL = "cell"
+    PIXEL_UNFAKE = "pixelUnfake"
+    SCHEMA_VERSION = "schemaVersion"
+    RUN_REVISION = "runRevision"
+    REQUEST_STAMP = "requestStamp"
+    DIRECTION_GROUPS = "directionGroups"
+    ANCHOR_FILES = "anchorFiles"
+    STATES = "states"
+    CURATION = "curation"
+    CURATION_DROPPED = "curationDropped"
+    ISO = "iso"
+    LANG = "lang"
+    HAS_ATLAS = "hasAtlas"
+    ATLAS = "atlas"
+    RECOLOR = "recolor"
+    FIT_PIXEL_UNFAKE = "fitPixelUnfake"
+    CONTRACT = "contract"
+    HEAL = "heal"
+    # cell
+    WIDTH = "width"
+    HEIGHT = "height"
+    SAFE_MARGIN_X = "safeMarginX"
+    SAFE_MARGIN_Y = "safeMarginY"
+    # pixelUnfake
+    LOGICAL_HEIGHT = "logicalHeight"
+    SCALE = "scale"
+    SOURCE = "source"
+    LABEL = "label"
+    # states[] — one row
+    NAME = "name"
+    RAW_PRESENT = "rawPresent"
+    PIXEL_SCALE = "pixelScale"
+    REFS = "refs"
+    FPS = "fps"
+    LOOP = "loop"
+    ACTION = "action"
+    REQUEST_FRAMES = "requestFrames"
+    EXTRACT_OK = "extractOk"
+    FRAMES = "frames"
+    TAKES = "takes"
+    # states[].frames[] — one frame
+    INDEX = "index"
+    URL = "url"
+    PRESENT = "present"
+    PLAIN_URL = "plainUrl"
+    STAMP = "stamp"
+    PLAIN_BAKE_URL = "plainBakeUrl"
+    PLAIN_BAKE_STAMP = "plainBakeStamp"
+    INPUT_GRID = "inputGrid"
+    SIZE = "size"
+    CONTENT_SIZE = "contentSize"
+    CONTENT_BOX = "contentBox"
+    # states[].refs[] — one generation-material chip
+    ROLE = "role"
+    ANCHOR_FRAME = "anchorFrame"
+    # directionGroups[] — one direction, and its anchorFrame {state, index, source}
+    DIRECTION = "direction"
+    ANCHOR = "anchor"
+    STATE = "state"
+    ANCHOR_ERROR = "anchorError"
+    ANCHOR_ERROR_CODE = "anchorErrorCode"
+    ANCHOR_PENDING = "anchorPending"
+    ANCHOR_URL = "anchorUrl"
+    MIRROR_OF = "mirrorOf"
+    # contract — the view's self-report
+    BASE = "base"
+    REFS_STATES = "refsStates"
+    GRID = "grid"
+    SOURCELESS = "sourceless"
+    # atlas
+    MTIME = "mtime"
+    MANIFEST_URL = "manifestUrl"
+    # recolor — the baked colourways, the thumbnail box (swatch) and each variant
+    DIR = "dir"
+    SWATCH = "swatch"
+    MATCH = "match"
+    TOLERANCE = "tolerance"
+    VARIANTS = "variants"
+    PICKED = "picked"
+    PICKED_KNOWN = "pickedKnown"
+    X = "x"
+    Y = "y"
+    W = "w"
+    H = "h"
+    SHEET_WIDTH = "sheetWidth"
+    SHEET_HEIGHT = "sheetHeight"
+    SHEET = "sheet"
+    SUBSTITUTED_PIXELS = "substitutedPixels"
+    PASSTHROUGH_PIXELS = "passthroughPixels"
+    PASSTHROUGH_COLOR_COUNT = "passthroughColorCount"
+    UNUSED_SOURCES = "unusedSources"
+    # replies — an error, a busy run and its long-op progress
+    ERROR = "error"
+    PATH = "path"
+    BUSY = "busy"
+    PROGRESS = "progress"
+    # /api/progress — states[]
+    RAW = "raw"
+    RAW_URL = "rawUrl"
+    FRAME0_URL = "frame0Url"
+    REL_RAW = "relRaw"
+    REL_FRAMES = "relFrames"
+    # /api/breathe-anatomy
+    ANATOMY = "anatomy"
+    DEFAULTS = "defaults"
+    DEPTH = "depth"
+    LAG = "lag"
+    BREATHS = "breaths"
+    # /api/base-grid
+    NOTE = "note"
+    X_EDGES = "xEdges"
+    Y_EDGES = "yEdges"
+    PITCH = "pitch"
+    # POST results
+    OK = "ok"
+    RETURNCODE = "returncode"
+    STDOUT = "stdout"
+    STDERR = "stderr"
+    EXPORT = "export"
+    GIF = "gif"
+    APPLIED = "applied"
+    SPACE = "space"
+    BACKUP = "backup"
+    # downloads — the file name the browser saves under
+    FILENAME_HEADER = "X-Filename"
 
 
 
@@ -155,7 +300,7 @@ def _breathe_source_frame(run_dir: Path, state: str):
         with Image.open(candidate) as opened:
             source = apply_pixel_edits(opened.convert("RGBA"), ops)
         key = reference_key(state=state, variant=variant,
-                            request_stamp=_file_stamp(run_dir / "sprite-request.json"),
+                            request_stamp=_file_stamp(run_dir / REQUEST_FILENAME),
                             source_index=source_index, source_stamp=_file_stamp(candidate),
                             pixel_ops=ops, transform=transforms.get(edit_idx))
         return apply_transform(source, transforms.get(edit_idx), cell, snap_scale=snap), key
@@ -177,14 +322,15 @@ def _base_grid_response(run_dir: Path, base_path: Path) -> dict:
     if cached is not None:
         return cached
     request = load_request(run_dir)
-    chroma = tuple(request.get("chroma_key", {}).get("rgb") or (255, 0, 255))
+    from sprite_gen.frames.cutout import KEY_TARGETS, MAGENTA
+    chroma = tuple(request.get("chroma_key", {}).get("rgb") or KEY_TARGETS[MAGENTA])
     from sprite_gen.frames.extract import (_grid_edges, detect_pixel_grid,
                                     remove_chroma_background_ycbcr, solid_alpha_bbox)
     with Image.open(base_path) as opened:
         cleaned = remove_chroma_background_ycbcr(opened.convert("RGBA"), chroma)
     box = solid_alpha_bbox(cleaned) or cleaned.getbbox()
     if not box:
-        result = {"grid": None, "note": "base has no content to detect a grid on"}
+        result = {Wire.GRID: None, Wire.NOTE: "base has no content to detect a grid on"}
     else:
         tight = cleaned.crop(box)
         # 여기서 쓰는 위상은 `detect_pixel_grid` 의 히스토그램 위상이고, 추출 스냅이 쓰는
@@ -197,12 +343,12 @@ def _base_grid_response(run_dir: Path, base_path: Path) -> dict:
         # 위상 정확도는 별건이다 (docs/pixel-unfake.md "위상은 근사가 아니라 실측으로 고른다").
         (pitch_x, pitch_y), (phase_x, phase_y) = detect_pixel_grid(tight)
         if min(pitch_x, pitch_y) < 2.0:
-            result = {"grid": None, "note": "no confident pixel grid detected"}
+            result = {Wire.GRID: None, Wire.NOTE: "no confident pixel grid detected"}
         else:
             x_edges = [box[0] + e for e in _grid_edges(tight.width, pitch_x, phase_x)]
             y_edges = [box[1] + e for e in _grid_edges(tight.height, pitch_y, phase_y)]
-            result = {"grid": {"xEdges": x_edges, "yEdges": y_edges,
-                               "pitch": [round(pitch_x, 2), round(pitch_y, 2)]}}
+            result = {Wire.GRID: {Wire.X_EDGES: x_edges, Wire.Y_EDGES: y_edges,
+                               Wire.PITCH: [round(pitch_x, 2), round(pitch_y, 2)]}}
     _BASE_GRID_CACHE.clear()  # 베이스는 런당 1개 — 이전 세대 항목만 치움
     _BASE_GRID_CACHE[cache_key] = result
     return result
@@ -289,12 +435,12 @@ def _anchor_group_fields(view: dict) -> dict:
     """directionGroups 항목에 실리는 앵커 필드. `pending`(그 행을 아직 안 뽑았다)은
     오류가 아니라 정상 구간이라 뷰가 경고색으로 칠하지 않는다 — 코드로 구분한다."""
     return {
-        "anchorFrame": ({"state": view["state"], "index": view["index"], "source": view["source"]}
+        Wire.ANCHOR_FRAME: ({Wire.STATE: view["state"], Wire.INDEX: view["index"], Wire.SOURCE: view["source"]}
                         if view.get("state") is not None else None),
-        "anchorError": view.get("error"),
-        "anchorErrorCode": view.get("code"),
-        "anchorPending": bool(view.get("pending")),
-        "anchorUrl": view.get("url"),  # 라이브 베이크 (파이프라인 트리 썸네일도 이걸 쓴다)
+        Wire.ANCHOR_ERROR: view.get("error"),
+        Wire.ANCHOR_ERROR_CODE: view.get("code"),
+        Wire.ANCHOR_PENDING: bool(view.get("pending")),
+        Wire.ANCHOR_URL: view.get("url"),  # 라이브 베이크 (파이프라인 트리 썸네일도 이걸 쓴다)
     }
 
 
@@ -321,22 +467,22 @@ def _state_refs(run_dir, state, request, anchor_views=None):
         anchor = run_dir / anchor_rel
         if state != anchor_state_name:
             if view.get("url"):
-                refs.append({"role": "anchor",
-                             "name": f"{view['state']}#{view['index']}"
+                refs.append({Wire.ROLE: REF_ANCHOR,
+                             Wire.NAME: f"{view['state']}#{view['index']}"
                                      f"{' · picked' if view.get('source') == 'picked' else ''}",
-                             "url": view["url"], "anchorFrame": True})
+                             Wire.URL: view["url"], Wire.ANCHOR_FRAME: True})
             elif anchor.is_file():
                 # 앵커 행이 아직 큐레이션/추출 전 — 실재하는 raw 스트립을 그대로 보여준다
-                refs.append({"role": "anchor", "name": anchor.name, "url": _url("run", *anchor_rel.split("/"))})
+                refs.append({Wire.ROLE: REF_ANCHOR, Wire.NAME: anchor.name, Wire.URL: _url("run", *anchor_rel.split("/"))})
         base = state[len(direction) + 1:] if state.startswith(direction + "_") else None
         if base and direction != "down":
             basis_rel = raw_rel(request, f"down_{base}")
             basis = run_dir / basis_rel
             if basis.is_file():
-                refs.append({"role": "basis", "name": basis.name, "url": _url("run", *basis_rel.split("/"))})
+                refs.append({Wire.ROLE: REF_BASIS, Wire.NAME: basis.name, Wire.URL: _url("run", *basis_rel.split("/"))})
     guide = run_dir / "references" / "layout-guides" / f"{state}.png"
     if guide.is_file():
-        refs.append({"role": "guide", "name": guide.name, "url": _url("run", "references", "layout-guides", f"{state}.png")})
+        refs.append({Wire.ROLE: REF_GUIDE, Wire.NAME: guide.name, Wire.URL: _url("run", "references", "layout-guides", f"{state}.png")})
     # imported runs (--pngs-dir): references/imported/<state>/<role>-<name>.png → 생성 재료 칩.
     # role 파싱 SSoT = curation.imported_ref_role. 미지 role 은 스킵한다 — import 가 fail-loud
     # 로 걸러 여기 도달하지 않지만, 손으로 놓인 파일도 조용히 guide 로 relabel 하지 않는다.
@@ -346,8 +492,8 @@ def _state_refs(run_dir, state, request, anchor_views=None):
             role = imported_ref_role(ref.name)
             if role is None:
                 continue
-            refs.append({"role": role, "name": ref.name,
-                         "url": _url("run", "references", "imported", state, ref.name)})
+            refs.append({Wire.ROLE: role, Wire.NAME: ref.name,
+                         Wire.URL: _url("run", "references", "imported", state, ref.name)})
     return refs
 
 
@@ -355,7 +501,7 @@ def _state_refs(run_dir, state, request, anchor_views=None):
 def _read_op_progress(run_dir: Path) -> dict | None:
     """엔진이 기록한 진행 파일 (.sprite-gen.progress.json) — 없으면 None."""
     try:
-        return json.loads((run_dir / ".sprite-gen.progress.json").read_text(encoding="utf-8"))
+        return json.loads((run_dir / PROGRESS_REL).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
 
@@ -388,11 +534,11 @@ def _build_run_state_impl(run_dir: Path) -> dict:
 
     cell = request["cell"]
     cell_state = {
-        "width": int(cell.get("width", cell.get("size", 0))),
-        "height": int(cell.get("height", cell.get("size", 0))),
+        Wire.WIDTH: int(cell.get("width", cell.get("size", 0))),
+        Wire.HEIGHT: int(cell.get("height", cell.get("size", 0))),
         # 안전영역/여백 알림 계산용 (여백 침범 = 정보성, 리롤 대상 아님)
-        "safeMarginX": int(cell.get("safe_margin_x", cell.get("safe_margin", 0))),
-        "safeMarginY": int(cell.get("safe_margin_y", cell.get("safe_margin", 0))),
+        Wire.SAFE_MARGIN_X: int(cell.get("safe_margin_x", cell.get("safe_margin", 0))),
+        Wire.SAFE_MARGIN_Y: int(cell.get("safe_margin_y", cell.get("safe_margin", 0))),
     }
 
     # 픽셀 언페이크 격자: 논리 픽셀 1칸이 셀 픽셀 몇 칸인가. extract 의 pp_scale 과 같은 식이어야
@@ -404,8 +550,8 @@ def _build_run_state_impl(run_dir: Path) -> dict:
         # 빠져 있었고, 선언값을 그대로 라벨에 쓰면 정수 격자가 반올림한 뒤에도 "48px"
         # 처럼 거짓 표기가 된다 (maintainer 2026-07-25).
         scale = pixel_snap_scale(request) or 1
-        logical_height = effective_logical_height(request) or cell_state["height"]
-        pixel_unfake = {"logicalHeight": logical_height, "scale": scale, "source": "request", "label": f"{logical_height}px"}
+        logical_height = effective_logical_height(request) or cell_state[Wire.HEIGHT]
+        pixel_unfake = {Wire.LOGICAL_HEIGHT: logical_height, Wire.SCALE: scale, Wire.SOURCE: "request", Wire.LABEL: f"{logical_height}px"}
 
     states = []
     # 온디맨드 픽셀 프리뷰 계산 예산 (요청당) — 초과분은 deferred 로 세서 보고한다
@@ -427,64 +573,64 @@ def _build_run_state_impl(run_dir: Path) -> dict:
             else:
                 rel = f"{state_frames_rel}/frame-{index}.png"
             present = (run_dir / rel).is_file()
-            frame = {"index": index, "url": _url(*rel.split("/")), "present": present}
+            frame = {Wire.INDEX: index, Wire.URL: _url(*rel.split("/")), Wire.PRESENT: present}
             # pp 해제 토글 표시본: 원본 화질(orig/ 고해상본) 우선, 없으면 셀 크기 .plain.png.
             # 둘 중 하나라도 있으면 큐레이터가 전/후 토글을 켠다.
             head, _, tail = rel.rpartition("/")
             orig_rel = f"{head}/orig/{tail}"
             plain_rel = rel[: -len(".png")] + ".plain.png"
             if (run_dir / orig_rel).is_file():
-                frame["plainUrl"] = _url(*orig_rel.split("/"))
+                frame[Wire.PLAIN_URL] = _url(*orig_rel.split("/"))
             elif (run_dir / plain_rel).is_file():
-                frame["plainUrl"] = _url(*plain_rel.split("/"))
+                frame[Wire.PLAIN_URL] = _url(*plain_rel.split("/"))
             # **굽기가 실제로 읽는 파일** — `row_frame_rel(row, i, "plain")` 과 같은 경로다.
             # 위 `plainUrl` 은 표시 화질용이라 `orig/` 고해상본을 우선하는데, 굽기는 그걸
             # 절대 안 읽는다. 호흡 프리뷰·신선도 판정이 `plainUrl` 을 쓰면 지문이 **영구
             # 불일치**라 그 줄의 영상 내보내기가 영구 차단된다 (validator 2026-07-26).
             if present:
-                frame["stamp"] = _file_stamp(run_dir / rel)
+                frame[Wire.STAMP] = _file_stamp(run_dir / rel)
             if (run_dir / plain_rel).is_file():
-                frame["plainBakeUrl"] = _url(*plain_rel.split("/"))
+                frame[Wire.PLAIN_BAKE_URL] = _url(*plain_rel.split("/"))
                 # URL 과 **짝으로** 나간다. 굽기가 읽는 파일이 곧 호흡 기준 프레임 키의
                 # 원본 조각이라, 둘 중 하나만 보내면 웹뷰가 키를 못 만든다.
-                frame["plainBakeStamp"] = _file_stamp(run_dir / plain_rel)
+                frame[Wire.PLAIN_BAKE_STAMP] = _file_stamp(run_dir / plain_rel)
             # 트윈 없는 프레임의 퍼펙은 클라 렌더러가 측정 k(pixelScale)로 양자화한다
             # — 서버 추정 스냅 프리뷰 레거시는 표시 격자와 다른 검출기(엔진 주기성,
             # 1:1 에 4.99)로 스냅해 같은 줄의 프레임마다 다른 진실을 만들었다
             # (validator R1 기각, plan curator-single-display-pipeline 에서 삭제).
             if index < len(labels):
-                frame["label"] = labels[index]
+                frame[Wire.LABEL] = labels[index]
             # 추출이 검출한 실제 절단선 (쌍둥이 셀 좌표) — 원본 화질 뷰의 최종 대응
             # 격자가 균등 분할 대신 이 선을 그린다 (중간 드리프트 제거)
             row_grids = row.get("input_grids") or []
             if index < len(row_grids) and row_grids[index]:
-                frame["inputGrid"] = row_grids[index]
+                frame[Wire.INPUT_GRID] = row_grids[index]
             if present and Image is not None:
                 # 실제 스프라이트 픽셀 크기(투명 패딩 제외 알파 bbox) — 사이즈 통일 검수용
                 try:
                     with Image.open(run_dir / rel) as im:
-                        frame["size"] = [im.width, im.height]
+                        frame[Wire.SIZE] = [im.width, im.height]
                         alpha = im.getchannel("A") if "A" in im.getbands() else None
                         bbox = alpha.getbbox() if alpha is not None else im.getbbox()
                         if bbox:
-                            frame["contentSize"] = [bbox[2] - bbox[0], bbox[3] - bbox[1]]
+                            frame[Wire.CONTENT_SIZE] = [bbox[2] - bbox[0], bbox[3] - bbox[1]]
                             # 최종 픽셀 콘텐츠 bbox(셀 좌표) — 원본 뷰의 "최종 대응 격자"
                             # (칸 수 = 최종 픽셀 수)가 이 상자를 균등 분할해 그린다
-                            frame["contentBox"] = list(bbox)
+                            frame[Wire.CONTENT_BOX] = list(bbox)
                 except OSError:
                     pass
             frames.append(frame)
         state_scale = None
         if pixel_unfake is not None:
-            state_scale = pixel_unfake["scale"]
+            state_scale = pixel_unfake[Wire.SCALE]
         else:
             for fr in frames:
-                if fr.get("present"):
+                if fr.get(Wire.PRESENT):
                     # measure from the real (decoded) file path, not fr["url"] — the url is
                     # percent-encoded for HTTP, so a special-char state name would point the
                     # measurement at a nonexistent encoded dir → pixelScale silently null.
                     row_files_m = row.get("files") or []
-                    rel_m = row_files_m[fr["index"]] if fr["index"] < len(row_files_m) else f"{state_frames_rel}/frame-{fr['index']}.png"
+                    rel_m = row_files_m[fr[Wire.INDEX]] if fr[Wire.INDEX] < len(row_files_m) else f"{state_frames_rel}/frame-{fr[Wire.INDEX]}.png"
                     state_scale = detect_pixel_pitch(run_dir / rel_m)
                     break
         if state_scale is None:
@@ -493,18 +639,18 @@ def _build_run_state_impl(run_dir: Path) -> dict:
             state_scale = 1
         states.append(
             {
-                "name": state,
-                "rawPresent": raw_present,
-                "pixelScale": state_scale,
-                "refs": _state_refs(run_dir, state, request, anchor_views),
-                "fps": int(entry.get("fps", 6)),
-                "loop": bool(entry.get("loop", True)),
-                "action": entry.get("action", ""),
-                "requestFrames": frame_count,
-                "extractOk": bool(row.get("ok", bool(files))),
-                "frames": frames,
+                Wire.NAME: state,
+                Wire.RAW_PRESENT: raw_present,
+                Wire.PIXEL_SCALE: state_scale,
+                Wire.REFS: _state_refs(run_dir, state, request, anchor_views),
+                Wire.FPS: int(entry.get("fps", 6)),
+                Wire.LOOP: bool(entry.get("loop", True)),
+                Wire.ACTION: entry.get("action", ""),
+                Wire.REQUEST_FRAMES: frame_count,
+                Wire.EXTRACT_OK: bool(row.get("ok", bool(files))),
+                Wire.FRAMES: frames,
                 # 테이크 선언 (호흡 에디터가 저장된 선/진폭을 복원하는 데 쓴다)
-                "takes": entry.get("takes") or [],
+                Wire.TAKES: entry.get("takes") or [],
             }
         )
 
@@ -523,20 +669,20 @@ def _build_run_state_impl(run_dir: Path) -> dict:
             # 지금 이 방향의 identity 로 쓰이는 인스턴스 (지정 or 앵커 행 시퀀스 헤드)
             # — 뷰가 그 카드에 앵커 배지를 붙이고, 해석 실패는 이유를 보여준다.
             direction_groups.append({
-                "direction": direction,
-                "anchor": anchor if anchor in request["states"] else None,
-                "states": members,
+                Wire.DIRECTION: direction,
+                Wire.ANCHOR: anchor if anchor in request["states"] else None,
+                Wire.STATES: members,
                 **_anchor_group_fields(anchor_views.get(direction) or {}),
             })
         for target, source in (directions_cfg.get("mirror") or {}).items():
-            direction_groups.append({"direction": target, "mirrorOf": source, "states": []})
+            direction_groups.append({Wire.DIRECTION: target, Wire.MIRROR_OF: source, Wire.STATES: []})
 
     # 방향 앵커 파일 (references/anchors/*.png) — 파일트리 표시용
     anchors_dir = run_dir / "references" / "anchors"
     anchor_files = []
     if anchors_dir.is_dir():
         for path in sorted(anchors_dir.glob("*.png")):
-            anchor_files.append({"name": path.name, "url": _url("run", "references", "anchors", path.name)})
+            anchor_files.append({Wire.NAME: path.name, Wire.URL: _url("run", "references", "anchors", path.name)})
 
     # 원본 베이스(아이덴티티 truth)가 있으면 큐레이터 최상단에 참조 줄로 노출
     base_url = None
@@ -547,53 +693,53 @@ def _build_run_state_impl(run_dir: Path) -> dict:
     # 뷰 계약 자가 보고 (run-contract.md §3): base 참조 줄 / 생성 재료 칩 / 픽셀 격자
     # 충족 여부. 셋 다 없으면 "소스 없는 뷰" — 세션마다 경험이 갈라지는 신호.
     has_base = base_url is not None
-    refs_states = sum(1 for st in states if st.get("refs"))
+    refs_states = sum(1 for st in states if st.get(Wire.REFS))
     # 격자는 언제나 있다 — `detect_pixel_pitch` 가 실패할 수 없는 정확 판정이라
     # 모든 상태가 ≥1 의 scale 을 갖는다. 조건부 False 는 곧 컨트롤 숨김이었고
     # 그게 버그였다 (maintainer 2026-07-24).
     has_grid = True
     contract = {
-        "base": has_base,
-        "refs": refs_states > 0,
-        "refsStates": refs_states,
-        "grid": has_grid,
+        Wire.BASE: has_base,
+        Wire.REFS: refs_states > 0,
+        Wire.REFS_STATES: refs_states,
+        Wire.GRID: has_grid,
         # 격자가 보편이 된 뒤로는 판별자가 못 된다 — 항상 참인 항을 or 에 두면
         # sourceless 가 영원히 False 라 경고가 죽는다. 남은 판별자(base/refs)로만 본다.
-        "sourceless": not (has_base or refs_states > 0),
+        Wire.SOURCELESS: not (has_base or refs_states > 0),
     }
     return {
-        "characterId": request["character"]["id"],
-        "runDir": str(run_dir),
-        "baseUrl": base_url,
-        "cell": cell_state,
+        Wire.CHARACTER_ID: request["character"]["id"],
+        Wire.RUN_DIR: str(run_dir),
+        Wire.BASE_URL: base_url,
+        Wire.CELL: cell_state,
         # 계약 scale(pp 런)이 없으면 줄별 실측이 진실이다 — null 로 접지 않는다.
-        "pixelUnfake": pixel_unfake if pixel_unfake is not None else {
-            "source": "auto", "label": "auto",
-            "scale": min((st["pixelScale"] for st in states if st.get("pixelScale")), default=1)},
-        "schemaVersion": SCHEMA_VERSION,
-        "runRevision": revision,
+        Wire.PIXEL_UNFAKE: pixel_unfake if pixel_unfake is not None else {
+            Wire.SOURCE: "auto", Wire.LABEL: "auto",
+            Wire.SCALE: min((st[Wire.PIXEL_SCALE] for st in states if st.get(Wire.PIXEL_SCALE)), default=1)},
+        Wire.SCHEMA_VERSION: SCHEMA_VERSION,
+        Wire.RUN_REVISION: revision,
         # 호흡 기준 프레임 키의 조각 — 셀 크기·`pixel_snap_scale` 같은 request 파생값을
         # 웹뷰가 재구현하지 않고 원인 하나로 덮는다 (`breathe.reference_key` 주석).
-        "requestStamp": _file_stamp(run_dir / "sprite-request.json"),
-        "directionGroups": direction_groups,
-        "anchorFiles": anchor_files,
-        "states": states,
-        "curation": curation,
+        Wire.REQUEST_STAMP: _file_stamp(run_dir / REQUEST_FILENAME),
+        Wire.DIRECTION_GROUPS: direction_groups,
+        Wire.ANCHOR_FILES: anchor_files,
+        Wire.STATES: states,
+        Wire.CURATION: curation,
         # 세대 불일치로 이번 로드에서 무효화(드롭)된 행 — 뷰가 배너로 알린다 (stderr 만으로는
         # 사용자가 못 본다; 조용한 소실 금지). 백업 파일명은 싣지 않는다: 로드는 아무것도
         # 쓰지 않고, 원문은 덮이는 순간 writer 가 백업한다 (`write_curation_atomic`).
-        "curationDropped": curation_report["dropped"],
-        "iso": request.get("iso"),
-        "lang": CurationHandler.lang,
-        "hasAtlas": (run_dir / "sprite-sheet-alpha.png").is_file(),
+        Wire.CURATION_DROPPED: curation_report["dropped"],
+        Wire.ISO: request.get("iso"),
+        Wire.LANG: CurationHandler.lang,
+        Wire.HAS_ATLAS: (run_dir / "sprite-sheet-alpha.png").is_file(),
         # 최종 산출물 섹션 (뷰 맨 아래, 아틀라스+manifest 좌우) — 파일이 실재할 때만.
         # 아틀라스는 다운로드/합성 시점 산출물이라 mtime 을 실어 시점을 표시한다.
-        "atlas": _atlas_info(run_dir),
+        Wire.ATLAS: _atlas_info(run_dir),
         # 팔레트 스왑 베이크 산출물 (`<run>/variants/`) — 없으면 None (섹션 자체가 안 뜬다).
-        "recolor": _recolor_info(run_dir, curation),
-        "fitPixelUnfake": bool((request.get("fit") or {}).get("pixel_unfake")),
+        Wire.RECOLOR: _recolor_info(run_dir, curation),
+        Wire.FIT_PIXEL_UNFAKE: bool((request.get("fit") or {}).get("pixel_unfake")),
         # 예산에 밀려 아직 못 만든 온디맨드 픽셀 프리뷰 수 — 0 이 아니면 리로드가 이어서 계산
-        "contract": contract,
+        Wire.CONTRACT: contract,
     }
 
 
@@ -622,10 +768,10 @@ def _first_frame_rect(run_dir: Path) -> dict | None:
             cell = cells[0]
             try:
                 return {
-                    "x": int(cell["x"]), "y": int(cell["y"]),
-                    "w": int(cell["w"]), "h": int(cell["h"]),
-                    "sheetWidth": int(layout["sheetWidth"]),
-                    "sheetHeight": int(layout["sheetHeight"]),
+                    Wire.X: int(cell["x"]), Wire.Y: int(cell["y"]),
+                    Wire.W: int(cell["w"]), Wire.H: int(cell["h"]),
+                    Wire.SHEET_WIDTH: int(layout["sheetWidth"]),
+                    Wire.SHEET_HEIGHT: int(layout["sheetHeight"]),
                 }
             except (KeyError, TypeError, ValueError):
                 return None
@@ -657,17 +803,17 @@ def _recolor_info(run_dir: Path, curation: dict | None) -> dict | None:
         present = bool(sheet) and path.is_file()
         manifest_name = entry.get("manifest")
         variants.append({
-            "name": entry.get("name"),
-            "sheet": sheet,
+            Wire.NAME: entry.get("name"),
+            Wire.SHEET: sheet,
             # mtime cache-bust: a re-bake rewrites the same filename, and a stale
             # browser cache would show the previous colourway under the new name.
-            "url": (_url("run", VARIANTS_DIRNAME, sheet) + f"?v={int(path.stat().st_mtime)}") if present else None,
-            "present": present,
-            "substitutedPixels": entry.get("substituted_pixels"),
-            "passthroughPixels": entry.get("passthrough_pixels"),
-            "passthroughColorCount": entry.get("passthrough_color_count"),
-            "unusedSources": [record.get("from") for record in entry.get("unused_sources", [])],
-            "manifestUrl": (_url("run", VARIANTS_DIRNAME, str(manifest_name))
+            Wire.URL: (_url("run", VARIANTS_DIRNAME, sheet) + f"?v={int(path.stat().st_mtime)}") if present else None,
+            Wire.PRESENT: present,
+            Wire.SUBSTITUTED_PIXELS: entry.get("substituted_pixels"),
+            Wire.PASSTHROUGH_PIXELS: entry.get("passthrough_pixels"),
+            Wire.PASSTHROUGH_COLOR_COUNT: entry.get("passthrough_color_count"),
+            Wire.UNUSED_SOURCES: [record.get("from") for record in entry.get("unused_sources", [])],
+            Wire.MANIFEST_URL: (_url("run", VARIANTS_DIRNAME, str(manifest_name))
                             if isinstance(manifest_name, str) else None),
         })
     base_name = str(report.get("base") or "")
@@ -675,21 +821,21 @@ def _recolor_info(run_dir: Path, curation: dict | None) -> dict | None:
     base_present = bool(base_name) and base_path.is_file()
     picked = recolor_pick(curation)
     return {
-        "dir": VARIANTS_DIRNAME,
+        Wire.DIR: VARIANTS_DIRNAME,
         # 썸네일이 잘라 볼 프레임 상자 (없으면 시트 전체를 보여준다 — _first_frame_rect 참조)
-        "swatch": _first_frame_rect(run_dir),
-        "match": report.get("match"),
-        "tolerance": report.get("tolerance"),
-        "base": {
-            "name": base_name,
-            "url": (_url("run", base_name) + f"?v={int(base_path.stat().st_mtime)}") if base_present else None,
-            "present": base_present,
+        Wire.SWATCH: _first_frame_rect(run_dir),
+        Wire.MATCH: report.get("match"),
+        Wire.TOLERANCE: report.get("tolerance"),
+        Wire.BASE: {
+            Wire.NAME: base_name,
+            Wire.URL: (_url("run", base_name) + f"?v={int(base_path.stat().st_mtime)}") if base_present else None,
+            Wire.PRESENT: base_present,
         },
-        "variants": variants,
-        "picked": picked,
+        Wire.VARIANTS: variants,
+        Wire.PICKED: picked,
         # The pick is stored by name; if the spec dropped that variant the name is
         # kept and flagged, so the view can say so instead of quietly un-picking.
-        "pickedKnown": picked is not None and any(v["name"] == picked for v in variants),
+        Wire.PICKED_KNOWN: picked is not None and any(v[Wire.NAME] == picked for v in variants),
     }
 
 
@@ -701,9 +847,9 @@ def _atlas_info(run_dir: Path) -> dict | None:
     mtime = int(atlas_path.stat().st_mtime)
     manifest_path = run_dir / "manifest.json"
     return {
-        "url": _url("run", "sprite-sheet-alpha.png") + f"?v={mtime}",
-        "mtime": mtime,
-        "manifestUrl": (_url("run", "manifest.json") + f"?v={mtime}") if manifest_path.is_file() else None,
+        Wire.URL: _url("run", "sprite-sheet-alpha.png") + f"?v={mtime}",
+        Wire.MTIME: mtime,
+        Wire.MANIFEST_URL: (_url("run", "manifest.json") + f"?v={mtime}") if manifest_path.is_file() else None,
     }
 
 
@@ -723,7 +869,7 @@ def _heal_attempt_key(run_dir: Path) -> tuple:
     """
     from sprite_gen.frames.extract import engine_revision
 
-    paths = [run_dir / "sprite-request.json", run_dir / "curation.json",
+    paths = [run_dir / REQUEST_FILENAME, run_dir / CURATION_FILENAME,
              run_dir / "frames" / "frames-manifest.json"]
     raw_dir = run_dir / "raw"
     if raw_dir.is_dir():
@@ -762,8 +908,8 @@ def _durable_failed_heal_report(run_dir: Path, attempt_key: tuple) -> dict | Non
     if not failed:
         failed = sorted({str(error).split(":", 1)[0] for error in failure.get("errors", [])
                          if ":" in str(error)})
-    return {"healed": [], "kept_stale": [], "failed": failed,
-            "notes": ["same engine/input already failed validation; previous frames kept"]}
+    return {HEAL_HEALED: [], HEAL_KEPT_STALE: [], HEAL_FAILED: failed,
+            HEAL_NOTES: ["same engine/input already failed validation; previous frames kept"]}
 
 
 def _run_heal(run_dir: Path, attempt_key: tuple) -> None:
@@ -772,12 +918,12 @@ def _run_heal(run_dir: Path, attempt_key: tuple) -> None:
         report = heal_run(run_dir)
     except (Exception, SystemExit) as exc:
         attempt_failed = True
-        report = {"healed": [], "kept_stale": [], "failed": [],
-                  "notes": [f"heal skipped: {exc}"]}
+        report = {HEAL_HEALED: [], HEAL_KEPT_STALE: [], HEAL_FAILED: [],
+                  HEAL_NOTES: [f"heal skipped: {exc}"]}
     with _heal_lock:
-        if report["healed"] or report["kept_stale"] or report.get("failed") or report["notes"]:
+        if report[HEAL_HEALED] or report[HEAL_KEPT_STALE] or report.get(HEAL_FAILED) or report[HEAL_NOTES]:
             _heal_state["pending_report"] = report
-        if report.get("failed") or attempt_failed:
+        if report.get(HEAL_FAILED) or attempt_failed:
             _heal_state["failed_attempt"] = attempt_key
         elif _heal_state["failed_attempt"] == attempt_key:
             _heal_state["failed_attempt"] = None
@@ -851,20 +997,20 @@ def build_download(run_dir: Path, kind: str) -> tuple[bytes, str] | dict:
     character = str(request.get("character", {}).get("id") or run_dir.name)
     if kind == "atlas":
         result = run_compose(run_dir)
-        if not result["ok"]:
+        if not result[Wire.OK]:
             return result
         files = [run_dir / "sprite-sheet-alpha.png", run_dir / "manifest.json"]
         files = [f for f in files if f.is_file()]
         return _zip_paths(run_dir, files), f"{character}-atlas.zip"
     if kind == "pngs":
         result = run_export(run_dir)
-        if not result["ok"]:
+        if not result[Wire.OK]:
             return result
         out = run_dir / "curated"
         return _zip_paths(run_dir, sorted(out.rglob("*.png"))), f"{character}-pngs.zip"
     if kind == "gifs":
         result = run_export_gif(run_dir)
-        if not result["ok"]:
+        if not result[Wire.OK]:
             return result
         out = run_dir / "exports"
         return _zip_paths(run_dir, sorted(out.glob("*.gif"))), f"{character}-gifs.zip"
@@ -875,13 +1021,13 @@ def build_download(run_dir: Path, kind: str) -> tuple[bytes, str] | dict:
         state, _, scale_part = kind[len("gif:"):].partition(":")
         scale = max(1, min(8, int(scale_part or 4)))
         result = run_export_gif(run_dir, state=state, scale=scale)
-        if not result["ok"]:
+        if not result[Wire.OK]:
             return result
         gif_path = run_dir / "exports" / f"{state}.gif"
         if not gif_path.is_file():
-            return {"ok": False, "error": f"gif not produced: {gif_path}"}
+            return {Wire.OK: False, Wire.ERROR: f"gif not produced: {gif_path}"}
         return gif_path.read_bytes(), f"{character}-{state}.gif"
-    return {"ok": False, "error": f"unknown download kind: {kind}"}
+    return {Wire.OK: False, Wire.ERROR: f"unknown download kind: {kind}"}
 
 
 def _run_module(name: str, run_dir: Path, *extra: str) -> dict:
@@ -901,10 +1047,10 @@ def _run_module(name: str, run_dir: Path, *extra: str) -> dict:
         text=True,
     )
     return {
-        "ok": proc.returncode == 0,
-        "returncode": proc.returncode,
-        "stdout": proc.stdout,
-        "stderr": proc.stderr,
+        Wire.OK: proc.returncode == 0,
+        Wire.RETURNCODE: proc.returncode,
+        Wire.STDOUT: proc.stdout,
+        Wire.STDERR: proc.stderr,
     }
 
 
@@ -913,8 +1059,15 @@ def run_compose(run_dir: Path) -> dict:
     return _run_module("compose_atlas", run_dir)
 
 
+# The providers the curator's reroll and in-between buttons run, in the order its select offers them
+# (gen-trigger.js GEN_PROVIDERS mirrors it). The curator's own set: the reroll CLI takes every gen provider,
+# and capabilities.PROVIDER_CALLS["curation"] counts on openai not being here.
+# This fork offers higgsfield first (docs/higgsfield.md).
+CURATOR_PROVIDERS = (PROVIDER_HIGGSFIELD, PROVIDER_CODEX, PROVIDER_GROK)
+
+
 def run_interpolate(run_dir: Path, state: str, index_a: int, index_b: int,
-                    t: float, label: str | None, provider: str = "higgsfield") -> dict:
+                    t: float, label: str | None, provider: str = interpolate_mod.DEFAULT_PROVIDER) -> dict:
     """AI in-between (`sprite_gen.effects.interpolate`): 테이크 기록 + 전체 배치 재추출.
 
     생성은 서버 머신의 provider CLI(codex/grok, 머신 로컬 OAuth)가 수행한다 —
@@ -928,7 +1081,7 @@ def run_interpolate(run_dir: Path, state: str, index_a: int, index_b: int,
     return _run_module("interpolate", run_dir, *extra)
 
 
-def run_reroll(run_dir: Path, state: str, provider: str = "higgsfield") -> dict:
+def run_reroll(run_dir: Path, state: str, provider: str = gen_mod.HARD_DEFAULT_PROVIDER) -> dict:
     """행 리롤 (`sprite_gen.effects.reroll`): 새 테이크 생성 + 전체 배치 재추출.
 
     primary 를 덮지 않는다 — 후보군 병기(테이크)가 계약이다 (maintainer 2026-07-19
@@ -941,9 +1094,9 @@ def run_reroll(run_dir: Path, state: str, provider: str = "higgsfield") -> dict:
 def run_export(run_dir: Path) -> dict:
     """Export curated frames back to named PNGs under <run-dir>/curated/."""
     result = _run_module("export_pngs", run_dir)
-    if result["ok"] and result["stdout"]:
+    if result[Wire.OK] and result[Wire.STDOUT]:
         try:
-            result["export"] = json.loads(result["stdout"])
+            result[Wire.EXPORT] = json.loads(result[Wire.STDOUT])
         except json.JSONDecodeError:
             pass
     return result
@@ -957,9 +1110,9 @@ def run_export_gif(run_dir: Path, state: str | None = None, scale: int = 1) -> d
     `state` limits to one row (`--state`) — the per-row download button path."""
     extra = (["--state", state] if state else []) + (["--scale", str(scale)] if scale > 1 else [])
     result = _run_module("compose_gif", run_dir, *extra)
-    if result["ok"] and result["stdout"]:
+    if result[Wire.OK] and result[Wire.STDOUT]:
         try:
-            result["gif"] = json.loads(result["stdout"])
+            result[Wire.GIF] = json.loads(result[Wire.STDOUT])
         except json.JSONDecodeError:
             pass
     return result
@@ -984,7 +1137,7 @@ class CurationHandler(BaseHTTPRequestHandler):
 
     def _send_file(self, path: Path) -> None:
         if not path.is_file():
-            self._send_json({"error": "not found", "path": str(path)}, 404)
+            self._send_json({Wire.ERROR: "not found", Wire.PATH: str(path)}, 404)
             return
         data = path.read_bytes()
         self.send_response(200)
@@ -1023,35 +1176,35 @@ class CurationHandler(BaseHTTPRequestHandler):
                 if busy:
                     # 장기 heal 진행 중 — 첫 탭부터 진행률 로딩 UI 가 뜨도록 즉답
                     self._send_json({
-                        "error": "re-extraction in progress — frames are being "
+                        Wire.ERROR: "re-extraction in progress — frames are being "
                                  "re-derived for the current engine; the view opens "
                                  "automatically when it finishes",
-                        "busy": True, "lang": CurationHandler.lang,
-                        "progress": _read_op_progress(self.run_dir)}, 503)
+                        Wire.BUSY: True, Wire.LANG: CurationHandler.lang,
+                        Wire.PROGRESS: _read_op_progress(self.run_dir)}, 503)
                     return
                 snapshot = build_run_state(self.run_dir)
                 heal = take_heal_report()  # 스냅샷 성공 뒤에만 소비 (단일 소비자)
                 if heal:
-                    snapshot["heal"] = heal
+                    snapshot[Wire.HEAL] = heal
                 self._send_json(snapshot)
             except (Exception, SystemExit) as exc:  # incl. load_frames_manifest fail-loud; no silent fallback
                 # 재추출이 돌고 있으면 request(새 테이크 선언)와 manifest(이전 세대)가
                 # 일시적으로 어긋난다 — corrupt 가 아니라 in-flight 다. 락 보유 중엔
                 # 그렇게 말해준다 (회귀 2026-07-17: 보간 직후 로드가 'corrupt frames
                 # manifest' 로 보여 사용자가 파손으로 오인).
-                if (self.run_dir / ".sprite-gen.lock").exists():
-                    self._send_json({"error": "re-extraction in progress — "
+                if (self.run_dir / LOCK_FILENAME).exists():
+                    self._send_json({Wire.ERROR: "re-extraction in progress — "
                                      "the run is being re-derived; reload when it finishes",
-                                     "busy": True, "progress": _read_op_progress(self.run_dir)}, 503)
+                                     Wire.BUSY: True, Wire.PROGRESS: _read_op_progress(self.run_dir)}, 503)
                 else:
-                    self._send_json({"error": str(exc)}, 500)
+                    self._send_json({Wire.ERROR: str(exc)}, 500)
             return
         if path == "/api/op-progress":
             # 오래 걸리는 파이프라인(추출 등)의 잘게 쪼갠 진행도 — 큐레이터가 폴링해
             # 퍼센트 표시 (maintainer 요청 2026-07-18). busy=락 보유 여부, progress=엔진 기록.
             self._send_json({
-                "busy": (self.run_dir / ".sprite-gen.lock").exists(),
-                "progress": _read_op_progress(self.run_dir),
+                Wire.BUSY: (self.run_dir / LOCK_FILENAME).exists(),
+                Wire.PROGRESS: _read_op_progress(self.run_dir),
             })
             return
         if path == "/api/anchor":
@@ -1063,7 +1216,7 @@ class CurationHandler(BaseHTTPRequestHandler):
             try:
                 scale = max(1, min(16, int((query.get("scale") or ["8"])[0])))
             except ValueError:
-                self._send_json({"error": "scale must be an integer"}, 400)
+                self._send_json({Wire.ERROR: "scale must be an integer"}, 400)
                 return
             try:
                 from sprite_gen.curate import anchor as anchor_mod
@@ -1075,7 +1228,7 @@ class CurationHandler(BaseHTTPRequestHandler):
                     buffer = io.BytesIO()
                     image.save(buffer, format="PNG")
             except (Exception, SystemExit) as exc:
-                self._send_json({"error": str(exc)}, 404)
+                self._send_json({Wire.ERROR: str(exc)}, 404)
                 return
             data = buffer.getvalue()
             self.send_response(200)
@@ -1101,13 +1254,13 @@ class CurationHandler(BaseHTTPRequestHandler):
             try:
                 frame, key = _breathe_source_frame(self.run_dir, state)
                 if frame is None:
-                    self._send_json({"error": f"no extracted frame for state {state!r}"}, 404)
+                    self._send_json({Wire.ERROR: f"no extracted frame for state {state!r}"}, 404)
                     return
                 frozen = freeze_anatomy(frame, overrides, key)
-                self._send_json({"anatomy": frozen, "defaults": {
-                    "depth": DEFAULT_DEPTH, "lag": DEFAULT_LAG, "breaths": 1}})
+                self._send_json({Wire.ANATOMY: frozen, Wire.DEFAULTS: {
+                    Wire.DEPTH: DEFAULT_DEPTH, Wire.LAG: DEFAULT_LAG, Wire.BREATHS: 1}})
             except (Exception, SystemExit) as exc:
-                self._send_json({"error": str(exc)}, 500)
+                self._send_json({Wire.ERROR: str(exc)}, 500)
             return
         if path == "/api/base-grid":
             # 베이스의 검출 픽셀 격자 — 편집기(줌 모달)의 논리 해상도와 base-edit 의
@@ -1115,11 +1268,11 @@ class CurationHandler(BaseHTTPRequestHandler):
             try:
                 base_path = _find_base_path(self.run_dir)
                 if base_path is None:
-                    self._send_json({"error": "no base-source image in this run"}, 404)
+                    self._send_json({Wire.ERROR: "no base-source image in this run"}, 404)
                     return
                 self._send_json(_base_grid_response(self.run_dir, base_path))
             except (Exception, SystemExit) as exc:
-                self._send_json({"error": str(exc)}, 500)
+                self._send_json({Wire.ERROR: str(exc)}, 500)
             return
         if path.startswith("/download/"):
             kind = path[len("/download/"):]
@@ -1132,14 +1285,14 @@ class CurationHandler(BaseHTTPRequestHandler):
                 busy = maybe_heal(self.run_dir)  # 리포트 미소비 — 소비자는 /api/run 만
                 if busy:
                     self._send_json({
-                        "error": "re-extraction in progress — retry the download "
+                        Wire.ERROR: "re-extraction in progress — retry the download "
                                  "when it finishes",
-                        "busy": True,
-                        "progress": _read_op_progress(self.run_dir)}, 503)
+                        Wire.BUSY: True,
+                        Wire.PROGRESS: _read_op_progress(self.run_dir)}, 503)
                     return
                 built = build_download(self.run_dir, kind)
             except (Exception, SystemExit) as exc:
-                self._send_json({"error": str(exc)}, 500)
+                self._send_json({Wire.ERROR: str(exc)}, 500)
                 return
             if isinstance(built, dict):
                 self._send_json(built, 500)
@@ -1149,7 +1302,7 @@ class CurationHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type",
                              "image/gif" if filename.endswith(".gif") else "application/zip")
             self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
-            self.send_header("X-Filename", filename)
+            self.send_header(Wire.FILENAME_HEADER, filename)
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
@@ -1163,8 +1316,8 @@ class CurationHandler(BaseHTTPRequestHandler):
                 busy = maybe_heal(self.run_dir)  # 리포트 미소비 — 소비자는 /api/run 만
                 if busy:
                     # heal 이 publish 락을 쥔 동안 read_guard 에서 행 걸리지 않게 즉답
-                    self._send_json({"busy": True,
-                                     "progress": _read_op_progress(self.run_dir)}, 503)
+                    self._send_json({Wire.BUSY: True,
+                                     Wire.PROGRESS: _read_op_progress(self.run_dir)}, 503)
                     return
                 with read_guard(self.run_dir):
                     request = load_request(self.run_dir)
@@ -1177,23 +1330,23 @@ class CurationHandler(BaseHTTPRequestHandler):
                         if state_dir.is_dir():
                             count = sum(1 for f in state_dir.glob("frame-*.png") if not f.name.endswith(".plain.png"))
                         progress.append({
-                            "name": state,
-                            "raw": (self.run_dir / state_raw).is_file(),
-                            "frames": count,
+                            Wire.NAME: state,
+                            Wire.RAW: (self.run_dir / state_raw).is_file(),
+                            Wire.FRAMES: count,
                             # 트리 썸네일용 실제 경로 URL (클라이언트 패턴 조립 금지)
-                            "rawUrl": _url("run", *state_raw.split("/")),
-                            "frame0Url": _url(*f"{state_frames}/frame-0.png".split("/")),
-                            "relRaw": state_raw,
-                            "relFrames": state_frames,
+                            Wire.RAW_URL: _url("run", *state_raw.split("/")),
+                            Wire.FRAME0_URL: _url(*f"{state_frames}/frame-0.png".split("/")),
+                            Wire.REL_RAW: state_raw,
+                            Wire.REL_FRAMES: state_frames,
                         })
-                    self._send_json({"states": progress, "runRevision": run_revision(self.run_dir)})
+                    self._send_json({Wire.STATES: progress, Wire.RUN_REVISION: run_revision(self.run_dir)})
             except (Exception, SystemExit) as exc:
-                self._send_json({"error": str(exc)}, 500)
+                self._send_json({Wire.ERROR: str(exc)}, 500)
             return
         if path.startswith("/curator/"):
             resolved = self._safe_path(CURATOR_DIR, path[len("/curator/"):])
             if resolved is None:
-                self._send_json({"error": "path escapes curator dir"}, 403)
+                self._send_json({Wire.ERROR: "path escapes curator dir"}, 403)
                 return
             self._send_file(resolved)
             return
@@ -1201,7 +1354,7 @@ class CurationHandler(BaseHTTPRequestHandler):
             rel = path[len("/run/"):] if path.startswith("/run/") else path[1:]
             resolved = self._safe_path(self.run_dir, rel)
             if resolved is None:
-                self._send_json({"error": "path escapes run dir"}, 403)
+                self._send_json({Wire.ERROR: "path escapes run dir"}, 403)
                 return
             # read_guard: serve run-dir files under the shared reader lock so a concurrent
             # publish swap can't 404 a file mid-move (reader isolation, same as /api/run).
@@ -1211,12 +1364,12 @@ class CurationHandler(BaseHTTPRequestHandler):
         # bare static asset (curator.js / curator.css served from /)
         asset = self._safe_path(CURATOR_DIR, path.lstrip("/"))
         if asset is None:
-            self._send_json({"error": "path escapes curator dir"}, 403)
+            self._send_json({Wire.ERROR: "path escapes curator dir"}, 403)
             return
         if asset.is_file():
             self._send_file(asset)
             return
-        self._send_json({"error": "not found", "path": path}, 404)
+        self._send_json({Wire.ERROR: "not found", Wire.PATH: path}, 404)
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
@@ -1237,7 +1390,7 @@ class CurationHandler(BaseHTTPRequestHandler):
                     # names but swapping the candidate images — old selections/transforms
                     # must not apply to the new frames (Consistency: observable 409, not a
                     # silent overwrite). runRevision is a content fingerprint of the frames.
-                    stale = payload.get("runRevision") != run_revision(self.run_dir)
+                    stale = payload.get(Wire.RUN_REVISION) != run_revision(self.run_dir)
                     if not stale:
                         # 엔진-소유 사이드카 필드 보존: 클라이언트 payload 는 자기가 아는
                         # 필드만 싣는다 — 에이전트/엔진이 심어둔 행 필드(frozen 등)가
@@ -1288,10 +1441,10 @@ class CurationHandler(BaseHTTPRequestHandler):
                                     slot[field] = prev_entry[field]
                         write_curation_atomic(self.run_dir, payload)
                 if stale:
-                    self._send_json({"error": "curation is from a different run generation "
+                    self._send_json({Wire.ERROR: "curation is from a different run generation "
                                      "(the run changed under this session; reload the view)"}, 409)
                 else:
-                    self._send_json({"ok": True})
+                    self._send_json({Wire.OK: True})
                 return
             if path == "/api/compare-gif":
                 # 비교 캔버스 캡처 프레임들(PNG dataURL) → 투명 GIF 조립.
@@ -1304,7 +1457,7 @@ class CurationHandler(BaseHTTPRequestHandler):
                 except (TypeError, ValueError):
                     duration_ms = 100
                 if not isinstance(raw_frames, list) or not raw_frames or len(raw_frames) > 200:
-                    self._send_json({"error": "frames: 1..200 data URLs required"}, 400)
+                    self._send_json({Wire.ERROR: "frames: 1..200 data URLs required"}, 400)
                     return
                 import base64
                 from sprite_gen.util.gif_utils import save_clean_gif
@@ -1316,16 +1469,16 @@ class CurationHandler(BaseHTTPRequestHandler):
                             raise ValueError("expected image/png data URLs")
                         images.append(Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGBA"))
                 except (ValueError, OSError) as exc:
-                    self._send_json({"error": f"bad frame data: {exc}"}, 400)
+                    self._send_json({Wire.ERROR: f"bad frame data: {exc}"}, 400)
                     return
                 # 포맷 선택 (maintainer 2026-07-19 "webm/mp4 로도"): gif=save_clean_gif,
                 # webm=VP9 알파 보존, mp4=x264 (알파 불가 — 화이트 배경 합성).
                 fmt = str(payload.get("format", "gif")).lower()
                 if fmt not in ("gif", "webm", "mp4"):
-                    self._send_json({"error": "format: gif|webm|mp4"}, 400)
+                    self._send_json({Wire.ERROR: "format: gif|webm|mp4"}, 400)
                     return
                 if fmt != "gif" and shutil.which("ffmpeg") is None:
-                    self._send_json({"error": "ffmpeg not found on server machine (webm/mp4 assembly requires it)"}, 500)
+                    self._send_json({Wire.ERROR: "ffmpeg not found on server machine (webm/mp4 assembly requires it)"}, 500)
                     return
                 with tempfile.TemporaryDirectory() as td:
                     out = Path(td) / f"compare.{fmt}"
@@ -1352,13 +1505,13 @@ class CurationHandler(BaseHTTPRequestHandler):
                         args.append(str(out))
                         proc = subprocess.run(args, capture_output=True, text=True)
                         if proc.returncode != 0 or not out.exists():
-                            self._send_json({"error": f"ffmpeg failed: {proc.stderr[-300:]}"}, 500)
+                            self._send_json({Wire.ERROR: f"ffmpeg failed: {proc.stderr[-300:]}"}, 500)
                             return
                     data = out.read_bytes()
                 content_type = {"gif": "image/gif", "webm": "video/webm", "mp4": "video/mp4"}[fmt]
                 self.send_response(200)
                 self.send_header("Content-Type", content_type)
-                self.send_header("X-Filename", f"compare.{fmt}")
+                self.send_header(Wire.FILENAME_HEADER, f"compare.{fmt}")
                 self.send_header("Content-Disposition", f'attachment; filename="compare.{fmt}"')
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
@@ -1366,7 +1519,7 @@ class CurationHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/compose":
                 result = run_compose(self.run_dir)
-                self._send_json(result, 200 if result["ok"] else 500)
+                self._send_json(result, 200 if result[Wire.OK] else 500)
                 return
             if path == "/api/base-edit":
                 # 베이스(base-source) 픽셀 편집 — 프레임과 달리 사이드카가 아니라
@@ -1380,26 +1533,27 @@ class CurationHandler(BaseHTTPRequestHandler):
                 if not isinstance(ops, dict):
                     ops = {}
                 if not ops and not transform_req:
-                    self._send_json({"error": 'body needs ops {"x,y": "#rrggbb"|null} and/or transform'}, 400)
+                    self._send_json({Wire.ERROR: 'body needs ops {"x,y": "#rrggbb"|null} and/or transform'}, 400)
                     return
                 base_path = _find_base_path(self.run_dir)
                 if base_path is None:
-                    self._send_json({"error": "no base-source image in this run"}, 404)
+                    self._send_json({Wire.ERROR: "no base-source image in this run"}, 404)
                     return
                 space = str(payload.get("space") or "raw")
                 grid = None
                 if space == "logical":
                     # 논리 셀 좌표 (줌 모달 편집 공간) — 검출 격자로 raw 블록에 확장.
                     # 격자 SSoT = _base_grid_response (클라 표시와 동일 절단선).
-                    grid = _base_grid_response(self.run_dir, base_path).get("grid")
+                    grid = _base_grid_response(self.run_dir, base_path).get(Wire.GRID)
                     if not grid:
-                        self._send_json({"error": "logical ops need a detected base grid"}, 422)
+                        self._send_json({Wire.ERROR: "logical ops need a detected base grid"}, 422)
                         return
                 elif space != "raw":
-                    self._send_json({"error": f"unknown ops space: {space}"}, 400)
+                    self._send_json({Wire.ERROR: f"unknown ops space: {space}"}, 400)
                     return
                 request = load_request(self.run_dir)
-                chroma = tuple(request.get("chroma_key", {}).get("rgb") or (255, 0, 255))
+                from sprite_gen.frames.cutout import KEY_TARGETS, MAGENTA
+                chroma = tuple(request.get("chroma_key", {}).get("rgb") or KEY_TARGETS[MAGENTA])
                 backup = base_path.with_name(base_path.name + ".orig")
                 if not backup.exists():
                     import shutil as _shutil
@@ -1421,7 +1575,7 @@ class CurationHandler(BaseHTTPRequestHandler):
                     else:
                         fill = chroma + (255,)  # 지우개 = 크로마 배경 복원
                     if grid is not None:
-                        xe, ye = grid["xEdges"], grid["yEdges"]
+                        xe, ye = grid[Wire.X_EDGES], grid[Wire.Y_EDGES]
                         if not (0 <= x < len(xe) - 1 and 0 <= y < len(ye) - 1):
                             continue
                         for ry in range(ye[y], ye[y + 1]):
@@ -1442,16 +1596,16 @@ class CurationHandler(BaseHTTPRequestHandler):
                     from sprite_gen.curate.curation import normalize_transform as _normalize_transform
                     tnorm = dict(_normalize_transform(transform_req))
                     if grid is not None:
-                        tnorm["dx"] = tnorm.get("dx", 0.0) * grid["pitch"][0]
-                        tnorm["dy"] = tnorm.get("dy", 0.0) * grid["pitch"][1]
+                        tnorm["dx"] = tnorm.get("dx", 0.0) * grid[Wire.PITCH][0]
+                        tnorm["dy"] = tnorm.get("dy", 0.0) * grid[Wire.PITCH][1]
                     moved = _apply_transform(image, tnorm, (image.width, image.height))
                     canvas = Image.new("RGBA", (image.width, image.height), chroma + (255,))
                     canvas.alpha_composite(moved)
                     image = canvas
                     applied += 1
                 image.save(base_path)
-                self._send_json({"ok": True, "applied": applied, "space": space,
-                                 "backup": backup.name})
+                self._send_json({Wire.OK: True, Wire.APPLIED: applied, Wire.SPACE: space,
+                                 Wire.BACKUP: backup.name})
                 return
             if path == "/api/state-fps":
                 # 줄 전체 재생 속도 = state fps (SSoT = sprite-request.json).
@@ -1463,28 +1617,28 @@ class CurationHandler(BaseHTTPRequestHandler):
                 try:
                     fps = int(payload.get("fps"))
                 except (TypeError, ValueError):
-                    self._send_json({"error": "fps:int required"}, 400)
+                    self._send_json({Wire.ERROR: "fps:int required"}, 400)
                     return
                 if not 1 <= fps <= 30:
-                    self._send_json({"error": f"fps must be 1..30: {fps}"}, 400)
+                    self._send_json({Wire.ERROR: f"fps must be 1..30: {fps}"}, 400)
                     return
                 with publish_guard(self.run_dir):
                     # 게이트 경유 (락 안이어도 안전 — 게이트는 읽기만 한다)
                     request = load_request(self.run_dir)
                     if state not in request.get("states", {}):
-                        self._send_json({"error": f"unknown state: {state}"}, 400)
+                        self._send_json({Wire.ERROR: f"unknown state: {state}"}, 400)
                         return
                     request["states"][state]["fps"] = fps
                     # 쓰기도 게이트 경유 — fps 편집이 디스크 스키마를 바꾸지 않는다.
                     write_request(self.run_dir, request)
-                self._send_json({"ok": True, "state": state, "fps": fps})
+                self._send_json({Wire.OK: True, Wire.STATE: state, Wire.FPS: fps})
                 return
             if path == "/api/interpolate":
                 payload = self._read_body()
                 state = str(payload.get("state") or "")
                 request = load_request(self.run_dir)
                 if state not in request.get("states", {}):
-                    self._send_json({"error": f"unknown state: {state}"}, 400)
+                    self._send_json({Wire.ERROR: f"unknown state: {state}"}, 400)
                     return
                 try:
                     index_a = int(payload["from"])
@@ -1492,45 +1646,45 @@ class CurationHandler(BaseHTTPRequestHandler):
                     t_value = float(payload.get("t", 0.5))
                 except (KeyError, TypeError, ValueError):
                     self._send_json(
-                        {"error": "body needs integer 'from'/'to' (+ optional float 't')"}, 400)
+                        {Wire.ERROR: "body needs integer 'from'/'to' (+ optional float 't')"}, 400)
                     return
                 if not 0.0 < t_value < 1.0:
-                    self._send_json({"error": f"t must be inside (0, 1): {t_value}"}, 400)
+                    self._send_json({Wire.ERROR: f"t must be inside (0, 1): {t_value}"}, 400)
                     return
-                provider = str(payload.get("provider") or "higgsfield")
-                if provider not in ("higgsfield", "codex", "grok"):
-                    self._send_json({"error": f"unknown provider: {provider}"}, 400)
+                provider = str(payload.get("provider") or interpolate_mod.DEFAULT_PROVIDER)
+                if provider not in CURATOR_PROVIDERS:
+                    self._send_json({Wire.ERROR: f"unknown provider: {provider}"}, 400)
                     return
                 result = run_interpolate(self.run_dir, state, index_a, index_b,
                                          t_value, payload.get("label") or None, provider)
-                self._send_json(result, 200 if result["ok"] else 500)
+                self._send_json(result, 200 if result[Wire.OK] else 500)
                 return
             if path == "/api/reroll":
                 payload = self._read_body()
                 state = str(payload.get("state") or "")
                 request = load_request(self.run_dir)
                 if state not in request.get("states", {}):
-                    self._send_json({"error": f"unknown state: {state}"}, 400)
+                    self._send_json({Wire.ERROR: f"unknown state: {state}"}, 400)
                     return
-                provider = str(payload.get("provider") or "higgsfield")
-                if provider not in ("higgsfield", "codex", "grok"):
-                    self._send_json({"error": f"unknown provider: {provider}"}, 400)
+                provider = str(payload.get("provider") or gen_mod.HARD_DEFAULT_PROVIDER)
+                if provider not in CURATOR_PROVIDERS:
+                    self._send_json({Wire.ERROR: f"unknown provider: {provider}"}, 400)
                     return
                 result = run_reroll(self.run_dir, state, provider)
-                self._send_json(result, 200 if result["ok"] else 500)
+                self._send_json(result, 200 if result[Wire.OK] else 500)
                 return
             if path == "/api/export":
                 result = run_export(self.run_dir)
-                self._send_json(result, 200 if result["ok"] else 500)
+                self._send_json(result, 200 if result[Wire.OK] else 500)
                 return
             if path == "/api/export-gif":
                 result = run_export_gif(self.run_dir)
-                self._send_json(result, 200 if result["ok"] else 500)
+                self._send_json(result, 200 if result[Wire.OK] else 500)
                 return
         except Exception as exc:
-            self._send_json({"error": str(exc)}, 500)
+            self._send_json({Wire.ERROR: str(exc)}, 500)
             return
-        self._send_json({"error": "not found", "path": path}, 404)
+        self._send_json({Wire.ERROR: "not found", Wire.PATH: path}, 404)
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
@@ -1555,7 +1709,7 @@ def run(*, run_dir: Path, host: str = "127.0.0.1", port: int = 0,
     which is also what `main()` below calls — one implementation, no per-entrypoint branch.
     """
     run_dir = run_dir.expanduser().resolve()
-    if not (run_dir / "sprite-request.json").is_file():
+    if not (run_dir / REQUEST_FILENAME).is_file():
         raise SystemExit(f"not a sprite-gen run dir (no sprite-request.json): {run_dir}")
     if not CURATOR_DIR.is_dir():
         raise SystemExit(f"missing curator SPA dir: {CURATOR_DIR}")
@@ -1572,12 +1726,12 @@ def run(*, run_dir: Path, host: str = "127.0.0.1", port: int = 0,
     # 셋 다 없으면 "소스 없는 뷰" 경고 (관측 가능하게 — No Silent Fallback).
     try:
         snapshot = build_run_state(run_dir)
-        c = snapshot.get("contract", {})
-        n_states = len(snapshot.get("states", []))
-        print(f"  view-contract: base={'yes' if c.get('base') else 'no'} · "
-              f"refs={c.get('refsStates', 0)}/{n_states} states · "
-              f"grid={'yes' if c.get('grid') else 'no'}")
-        if c.get("sourceless"):
+        c = snapshot.get(Wire.CONTRACT, {})
+        n_states = len(snapshot.get(Wire.STATES, []))
+        print(f"  view-contract: base={'yes' if c.get(Wire.BASE) else 'no'} · "
+              f"refs={c.get(Wire.REFS_STATES, 0)}/{n_states} states · "
+              f"grid={'yes' if c.get(Wire.GRID) else 'no'}")
+        if c.get(Wire.SOURCELESS):
             print("  WARNING: sourceless view — no base-source, no generation-material refs, no pixel grid. "
                   "이 뷰는 세션마다 경험이 갈라진다 (run-contract.md §3/§4: _base/_refs 동봉 또는 fit.pixel_unfake 권장).")
     except Exception as exc:  # 계약 보고 실패는 서빙을 막지 않는다 — 관측만

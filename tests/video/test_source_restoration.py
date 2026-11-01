@@ -988,3 +988,8 @@ def test_video_frames_writes_a_receipt_of_the_actual_extraction(tmp_path):
     assert len(src.frames)==12
     assert src.record['extraction_engine']==evidence.engine_identity()
     assert src.record['inputs']['frames_report']['sha256']==evidence.digest(report.read_bytes())
+
+
+def test_a_restoration_s_five_files_are_pinned_as_written():
+    assert restoration.ARTIFACT_SUFFIXES == {"strip": ".strip.png", "meta": ".strip.json", "report": ".loop.json",
+                                             "gif": ".gif", "webp": ".webp"}

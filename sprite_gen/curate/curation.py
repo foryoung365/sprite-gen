@@ -159,17 +159,18 @@ from typing import Any
 from PIL import Image
 
 from sprite_gen.spec.layout import raw_rel
-from sprite_gen.spec.runio import load_request
+from sprite_gen.spec.runio import REQUEST_FILENAME, load_request
 from sprite_gen.util.resample import transform_cell
 
 CURATION_FILENAME = "curation.json"
+CURATION_KIND = "sprite-gen-curation"  # 큐레이터 persistence.js 의 저장 payload 도 이 값이다
 SCHEMA_VERSION = 1
 IDENTITY = {"rotate": 0.0, "scale": 1.0, "dx": 0, "dy": 0, "shx": 0.0, "shy": 0.0, "flipX": 0}
 
 # Generation-material chip roles for imported `_refs/<role>-<name>.png` files
 # (run-contract.md §4). Single source shared by the importer (fail-loud on an
 # unknown role) and the webview server (render), so neither silently invents a role.
-IMPORTED_REF_ROLES = ("anchor", "basis", "guide")
+REF_ANCHOR, REF_BASIS, REF_GUIDE = IMPORTED_REF_ROLES = ("anchor", "basis", "guide")
 
 # 은퇴한 사이드카 키 -> 현행 키. `fit` 쪽과 같은 어휘 교체다 (runio.LEGACY_FIT_KEYS 참조):
 # "pixel perfect" 는 광의 통용어의 오용이고, 이 파이프라인이 하는 일의 정확한 명칭은
@@ -224,7 +225,7 @@ BREATHE_LAG_MAX = 0.45
 # 큰 일러·영상 프레임용 — 머리를 자리·바이트 그대로 두고 가슴에서 둥글게 숨쉬게 한다
 # (`sprite_gen.effects.breathe`). smooth 의 기본 진폭은 일러에 맞게 작다 — 가슴 가운데가 목 아래
 # 몸통 높이의 0.85 % 오른다 (흉상 일러에서 화면 높이 약 0.5 %, 화면 크기로 봐도 숨이 세지 않다).
-BREATHE_MODES = ("pixel", "smooth")
+BREATHE_PIXEL, BREATHE_SMOOTH = BREATHE_MODES = ("pixel", "smooth")
 BREATHE_SMOOTH_DEPTH = 0.0085
 # smooth 의 가슴 부풂 — 가슴 가운데에서 이 비율만큼 넓어지고, 바깥으로 갈수록 무게만큼 준다.
 BREATHE_SMOOTH_DEPTH_X = 0.028
@@ -337,7 +338,7 @@ def state_breathe(curation: dict[str, Any] | None, state: str) -> dict[str, Any]
         raise SystemExit(
             f"curation: states.{state}.breathe.mode = {mode!r} 를 모른다 — "
             f"{' | '.join(BREATHE_MODES)} 중 하나다 (생략하면 pixel). 조용히 pixel 로 굽지 않는다.")
-    smooth = mode == "smooth"
+    smooth = mode == BREATHE_SMOOTH
     # pixel 의 둥근 가슴·양팔 가로 — 생략(None)·0 은 꺼짐. 하나라도 0 보다 크면 그 줄은 round 장을 굽는다.
     amps = {}
     for name in BREATHE_ROUND_KEYS:
@@ -628,7 +629,7 @@ def run_revision(run_dir: Path) -> str:
     stamped for a prior generation is detected as stale. Single source of run identity for
     the server, compose, export, and the webview."""
     h = hashlib.sha256()
-    for name in ("sprite-request.json", "frames/frames-manifest.json"):
+    for name in (REQUEST_FILENAME, "frames/frames-manifest.json"):
         try:
             h.update((run_dir / name).read_bytes())
         except OSError:
@@ -818,7 +819,7 @@ def load_curation_report(run_dir: Path) -> tuple[dict[str, Any] | None, dict[str
         return None, report
     raw_text = path.read_text(encoding="utf-8")
     data = json.loads(raw_text)
-    if data.get("kind") != "sprite-gen-curation":
+    if data.get("kind") != CURATION_KIND:
         raise SystemExit(f"{path} is not a sprite-gen-curation file")
     # 은퇴 키 이관 (메모리) — 다음 저장이 현행 키로 파일을 갱신한다. 두 키 동시 = hard fail.
     _migrate_curation_keys(data, str(path))
@@ -1117,7 +1118,7 @@ def write_curation_atomic(run_dir: Path, payload: dict[str, Any]) -> str | None:
 
     backup: str | None = None
 
-    if payload.get("kind") != "sprite-gen-curation":
+    if payload.get("kind") != CURATION_KIND:
         raise ValueError("payload is not a sprite-gen-curation document")
     _migrate_curation_keys(payload, str(run_dir / CURATION_FILENAME))
     payload = _carry_anchor_provenance(run_dir, payload)
@@ -1340,4 +1341,4 @@ def apply_transform(
 
 
 def empty_curation() -> dict[str, Any]:
-    return {"version": SCHEMA_VERSION, "kind": "sprite-gen-curation", "states": {}}
+    return {"version": SCHEMA_VERSION, "kind": CURATION_KIND, "states": {}}

@@ -2,6 +2,7 @@
 """The shared read-only adapter: real writer formats, one-read snapshots, bound fingerprints."""
 
 import hashlib
+import importlib
 import json
 from pathlib import Path
 
@@ -348,3 +349,14 @@ def test_all_direction_rows_share_one_snapshot_decode(tmp_path, monkeypatch):
     assert sequences["NE"].frames[0].getpixel((0, 0)) == (255, 0, 0, 255)
     assert sequences["SW"].frames[0].getpixel((0, 0)) == (0, 0, 255, 255)
     assert sequences["NE"].fingerprints() == sequences["SW"].fingerprints()
+
+
+@pytest.mark.parametrize(("module", "name", "written"), [
+    ("sprite_gen.spec.runio", "REQUEST_KIND", "sprite-gen-request"),
+    ("sprite_gen.video.align", "REPORT_KIND", "sprite-gen-video-cycle-align-report"),
+    ("sprite_gen.video.frames", "REPORT_KIND", "sprite-gen-video-frames-report"),
+    ("sprite_gen.frames.unpack_atlas", "UNPACK_SOURCE_KIND", "sprite-gen-unpack-source"),
+    ("sprite_gen.video.prop_plate", "CANVAS_REPORT", "sprite-gen-video-canvas-report"),
+])
+def test_a_kind_written_to_disk_is_pinned_as_written(module, name, written):
+    assert getattr(importlib.import_module(module), name) == written

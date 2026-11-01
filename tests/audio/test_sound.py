@@ -242,6 +242,13 @@ def test_unproven_refusals_are_not_retried(status, body):
     assert retry.again_after('elevenlabs', 'POST', status, body, {}, 1) is None
 
 
+@pytest.mark.parametrize('code', ['system_busy', 'too_many_concurrent_requests'])
+def test_the_two_documented_busy_codes_are_retried_and_named(code):
+    body = {'detail': {'status': code}}
+    assert retry.again_after('elevenlabs', 'POST', 429, body, {}, 1) is not None
+    assert provider._code(body) == code
+
+
 def test_cache_serializes_paid_requests_and_survives_uncertain_results(tmp_path):
     db = tmp_path / 'cache.sqlite3'
     entered, release = threading.Event(), threading.Event()

@@ -188,7 +188,7 @@ def _open(request_for: Callable[[], urllib.request.Request], token: str, *, time
             raise _no_answer(exc) from exc
         return response.status, response, response.headers
 
-    status, answer, headers, _asks = retry.ask(send, provider="anthropic", who="claude", label=label, method=method,
+    status, answer, headers, _asks = retry.ask(send, provider=address.ANTHROPIC, who="claude", label=label, method=method,
                                                sleep=sleep, kind=_error_type, deadline=deadline)
     if 200 <= status < 300:
         return answer
@@ -258,7 +258,7 @@ def stream_message(token: str, body: dict[str, Any], *, sleep: Sleep = time.slee
     data = json.dumps({**body, "stream": True}).encode("utf-8")
     timeout = READ_TIMEOUT_SECONDS if timeout is None else timeout
     started = time.monotonic()
-    response = _open(lambda: _request("POST", address.url("anthropic", "/messages"), token, data,
+    response = _open(lambda: _request("POST", address.url(address.ANTHROPIC, "/messages"), token, data,
                                       accept="text/event-stream"),
                      token, timeout=timeout, sleep=sleep, label=label)
     request_id = response.headers.get("request-id")
@@ -321,7 +321,7 @@ def submit_batch(token: str, requests: list[tuple[str, dict[str, Any]]], *, slee
                  label: str = "pixel-draw") -> dict[str, Any]:
     """Create one Message Batch of `(custom_id, params)` and return the batch object."""
     body = {"requests": [{"custom_id": custom_id, "params": params} for custom_id, params in requests]}
-    batch = _json_call("POST", address.url("anthropic", "/messages/batches"), token, body, sleep=sleep, label=label)
+    batch = _json_call("POST", address.url(address.ANTHROPIC, "/messages/batches"), token, body, sleep=sleep, label=label)
     if not isinstance(batch, dict) or not isinstance(batch.get("id"), str):
         raise ApiError("pixel-draw: the batch answer names no batch id")
     return batch
@@ -330,7 +330,7 @@ def submit_batch(token: str, requests: list[tuple[str, dict[str, Any]]], *, slee
 def get_batch(token: str, batch_id: str, *, sleep: Sleep = time.sleep, label: str = "pixel-draw",
               deadline: float | None = None) -> dict[str, Any]:
     """The batch object; a refused read is asked again within `deadline` (the wait for the batch)."""
-    batch = _json_call("GET", address.url("anthropic", f"/messages/batches/{batch_id}"), token, None, sleep=sleep,
+    batch = _json_call("GET", address.url(address.ANTHROPIC, f"/messages/batches/{batch_id}"), token, None, sleep=sleep,
                        label=label, deadline=deadline)
     if not isinstance(batch, dict):
         raise ApiError("pixel-draw: the batch status answer is not an object")
@@ -361,7 +361,7 @@ def batch_results(token: str, batch: dict[str, Any], *, sleep: Sleep = time.slee
     if not isinstance(url, str) or not url:
         raise ApiError(f"pixel-draw: batch {batch.get('id')} has ended but names no results_url")
     # Anthropic's own host: through the Anthropic base when SPRITE_GEN_ANTHROPIC_BASE_URL is set (`address.fetched`).
-    url = address.fetched("anthropic", url)
+    url = address.fetched(address.ANTHROPIC, url)
     response = _open(lambda: _request("GET", url, token, None, accept="application/binary"),
                      token, timeout=120.0, sleep=sleep, label=label, method="GET", deadline=deadline)
     try:

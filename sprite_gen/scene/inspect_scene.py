@@ -26,6 +26,7 @@ def _mae(a, b) -> float:
 
 
 def inspect_scene(scene: Scene, *, renderer=None, frame_dir=None):
+    from sprite_gen.frames.cutout import GREEN, MAGENTA
     from sprite_gen.scene.render import Renderer
     renderer = renderer or Renderer(scene)
     first = previous = None
@@ -101,7 +102,7 @@ def inspect_scene(scene: Scene, *, renderer=None, frame_dir=None):
         warnings.append(f"layers entirely outside the viewport in some frames: {', '.join(offscreen)}")
     return {"kind": "sprite-gen-scene-inspection", "version": 1, "frames": scene.frame_count,
             "source_fingerprints": scene.source_fingerprints, "status": "needs-review" if warnings else "measured",
-            "loop": loop, "key_like_pixels": {"green": green, "magenta": magenta}, "clipping": clipped,
+            "loop": loop, "key_like_pixels": {GREEN: green, MAGENTA: magenta}, "clipping": clipped,
             "sources": sources, "tile_joins": tiles, "warnings": warnings, "visual_review_required": True}
 
 

@@ -29,8 +29,9 @@ from pathlib import Path
 from typing import Any
 
 from . import higgsfield, prompt_parts
+from .base import PROVIDER_GROK, PROVIDER_HIGGSFIELD
 
-PROVIDERS = ("higgsfield", "grok")
+PROVIDERS = (PROVIDER_HIGGSFIELD, PROVIDER_GROK)
 PROVIDER_ENV = "SPRITE_GEN_VIDEO_PROVIDER"
 MODEL_ENV = "SPRITE_GEN_HIGGSFIELD_VIDEO_MODEL"
 STILL_MODEL = "grok_video_v15"
@@ -133,7 +134,7 @@ def generate_video(request):
         auth_source=report["auth_source"], elapsed_seconds=time.monotonic() - started, polls=0,
         duration_requested=request.duration, image=image, prompt=request.prompt, resolution=request.resolution,
         aspect_ratio=job.params.get("aspect_ratio"), generate_audio=job.params.get("generate_audio"),
-        mode=request.mode, inputs=inputs, facing=facing_report, provider="higgsfield",
+        mode=request.mode, inputs=inputs, facing=facing_report, provider=PROVIDER_HIGGSFIELD,
         extra={"credits": report["credits"], "transport": report["transport"]},
     )
 
@@ -152,5 +153,5 @@ def resume_video(request):
         out=out, bytes=len(data), model=reply.get("job_type"), request_id=request.request_id,
         auth_source="higgsfield-login", elapsed_seconds=time.monotonic() - started, polls=0,
         duration_requested=None, prompt=str(params.get("prompt") or ""), resolution=str(params.get("resolution") or ""),
-        provider="higgsfield", extra={"transport": "higgsfield-cli"},
+        provider=PROVIDER_HIGGSFIELD, extra={"transport": "higgsfield-cli"},
     )

@@ -3,7 +3,8 @@
 where its body is in each cell (the mass centre), what each cell touches and its air, in the strip sidecar; with
 `--air-retime` the air is given a length, a gravity and a speed of its own, its cells made between the clip's frames
 (held_fill.at_times), the take-off and the landing as filmed and the contacts where they were. Without the handle the
-cut is the same pictures as before (tests/picture_digest.py) and its sidecar only grows a key.
+cut is the same pictures as before (tests/picture_digest.py) and its sidecar only grows a key (and the record of its
+cells, `cell_record`, as every cut's).
 
 The jump is synthetic (tests/video/jump_inputs.py), its mass centre on a parabola under a known gravity; the
 interpolator is the stand-in that draws it again at the time asked for (`Between`)."""
@@ -12,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -22,6 +24,7 @@ from sprite_gen.video import held_fill
 from sprite_gen.video import loop as loop_mod
 from sprite_gen.video import nonloop
 from sprite_gen.video import root_motion as rm
+from sprite_gen.video import sway
 from tests.video import jump_inputs as J
 from tests.video.held_fill_inputs import Between
 from tests.video.test_held_fill import UNHELD, _no_rife, _pictures
@@ -230,6 +233,55 @@ def test_no_rife_leaves_the_air_as_filmed_and_says_which_motion(tmp_path, monkey
     assert meta["root_motion"]["air"][0]["seconds"] == pytest.approx(J.AIR, abs=1e-3)
 
 
+def test_a_retimed_cut_records_each_cell_as_the_frame_it_is_and_a_cell_made_or_moved_as_not_filmed(tmp_path):
+    """The strip's record of its cells (`cell_record`, video-sway --read-on-cut) of the jump with its air half as long
+    again, on the clip's own canvas: a cell held_fill.at_times takes as a frame (`source_frames`) is that frame, one made between
+    two frames reads as the frame before its time; the cells up to the take-off are their frames as filmed, and no air
+    cell (made, or moved onto the parabola) nor any from the landing on (moved along) is, so --read-on-cut does not
+    pair it."""
+    between = Between(J.draw, range(J.FRAMES))
+    rep = _run(tmp_path, J.jump(), "long", state="jump", cycle_mode="once", air_retime=f"air={1.5 * J.AIR}",
+               interpolate=between)
+    meta = _meta(rep)
+    record = meta["air_retime"]
+    (air,) = record["air"]
+    assert record["applied"] and record["canvas_offset"] == [0, 0] and air["moved_along_px"] != 0
+    assert {im.size for im in (Image.open(p) for p in (Path(rep["out_dir"]) / "cycle").glob("frame-*.png"))} == {(J.W, J.H)}
+    sha = hashlib.sha256(Path(rep["strip"]["path"]).read_bytes()).hexdigest()
+    cells, times = sway.cell_record(meta, sha), meta["source_cut"]["times"]
+    assert len(cells) == meta["frames"] == len(times)
+    made = [c for c, t in enumerate(times) if abs(t - round(t)) > held_fill.SNAP]
+    assert len(made) == record["made"] == 10 and all(air["takeoff"] < c < air["landing"] for c in made)
+    for c, (cell, t) in enumerate(zip(cells, times)):
+        assert cell["source_frame"] == (math.floor(t) if c in made else round(t)), c
+        assert cell["as_filmed"] is (c <= air["takeoff"]), c
+    # Read on a cut of the same clip from frame 6: the retimed cut's first cell of frame 6 is made between 6 and 7.
+    read = _run(tmp_path, J.jump(), "from6", state="jump", cycle_mode="once", start=6, length=10)
+    first = [c["source_frame"] for c in cells].index(6)
+    assert first in made
+    with pytest.raises(SystemExit, match=rf"cell {first} is not that frame as filmed: video-loop did not cut it as filmed "
+                                         rf"\(cell_record\.cells\[{first}\]\.as_filmed\)"):
+        sway.recut_pair(meta, _meta(read), hashlib.sha256(Path(read["strip"]["path"]).read_bytes()).hexdigest(),
+                        strip_sha256=sha)
+
+
+def test_a_retimed_cut_whose_frames_between_show_a_frame_again_records_those_cells_as_the_nearer_frame(tmp_path):
+    """The same air half as long again with an interpolator that gives back the frame before: no cell between two
+    frames is made (each refused, `held`), each is the nearer frame (`air_retime.shown_again`), and the strip's record of
+    its cells names that frame (`source_frames`, held_fill.at_times'), not the frame before its time."""
+    rep = _run(tmp_path, J.jump(), "stuck", state="jump", cycle_mode="once", air_retime=f"air={1.5 * J.AIR}",
+               interpolate=lambda a, b, t: a)
+    meta = _meta(rep)
+    record = meta["air_retime"]
+    between = [c for c, t in enumerate(meta["source_cut"]["times"]) if abs(t - round(t)) > held_fill.SNAP]
+    assert record["applied"] and record["made"] == 0 and record["shown_again"] == between and len(between) == 10
+    sha = hashlib.sha256(Path(rep["strip"]["path"]).read_bytes()).hexdigest()
+    cells, times = sway.cell_record(meta, sha), meta["source_cut"]["times"]
+    assert len(cells) == meta["frames"] == len(times)
+    assert [cell["source_frame"] for cell in cells] == [round(t) for t in times]
+    assert any(round(times[c]) != math.floor(times[c]) for c in between)
+
+
 def test_gravity_or_speed_without_metres_per_pixel_is_refused(tmp_path):
     with pytest.raises(SystemExit, match="--meters-per-px"):
         _run(tmp_path, J.jump(), "g", state="jump", cycle_mode="once", air_retime="gravity=9.81")
@@ -238,7 +290,8 @@ def test_gravity_or_speed_without_metres_per_pixel_is_refused(tmp_path):
 
 
 # The base engine's sidecars of the six inputs the held-cell tests pin (559d498, v3.8.0), every key: without the handle
-# the cut keeps every one of them, value for value, and a cut played once grows `root_motion`. The keyed clip's
+# the cut keeps every one of them, value for value, a cut played once grows `root_motion`, and every cut the record of
+# its cells (`cell_record`, bound to its strip by the PNG file's sha, so read against this run's strip). The keyed clip's
 # identity (`source_cut.source.sha256`) is the sha of the input PNG files, other bytes on Linux than on macOS (its
 # zlib): it is read against this run's own files, and pinned without.
 SIDECARS = {
@@ -261,6 +314,9 @@ def test_without_the_handle_the_cut_is_the_same_pictures_as_before_and_its_sidec
     assert _pictures(Path(rep["out_dir"]), case) == pinned
     meta = _meta(rep)
     grown = meta.pop("root_motion", None)
+    cells = meta.pop(loop_mod.CELL_RECORD)
+    assert cells["strip_sha256"] == hashlib.sha256(Path(rep["strip"]["path"]).read_bytes()).hexdigest()
+    assert len(cells["cells"]) == meta["frames"]
     source = meta["source_cut"]["source"]
     assert source.pop("sha256") == evidence.source_identity(sorted(keyed.glob("*.png")), 24.0)["sha256"]
     assert hashlib.sha256(json.dumps(meta, sort_keys=True).encode()).hexdigest() == SIDECARS[case]

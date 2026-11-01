@@ -153,6 +153,7 @@ def test_no_codex_login_and_nothing_chosen_ends_with_the_question_and_draws_noth
     assert question["cause"] == "login" and question["reason"] == "codex CLI not found on PATH"
     assert question["choices"] == {"higgsfield": "--provider higgsfield", "openai": "--provider openai",
                                    "grok": "--provider grok", "stop": None}
+    assert list(question["choices"]) == ["higgsfield", "openai", "grok", "stop"]  # the line's order: dict == does not see it
     assert "OpenAI API" in question["question"] and "Grok" in question["question"] and "stop" in question["question"]
     assert not out.exists() and not report.exists()
 
@@ -346,6 +347,7 @@ def test_video_set_whose_mid_step_redraw_asked_stops_with_the_same_question(tmp_
     assert asked.value.code == base.CODEX_UNAVAILABLE_EXIT and question["cause"] == "login"
     assert question["choices"] == {"higgsfield": "--still-provider higgsfield", "openai": "--still-provider openai",
                                    "grok": "--still-provider grok", "stop": None}
+    assert list(question["choices"]) == ["higgsfield", "openai", "grok", "stop"]
     payload = json.loads((root / "set.report.json").read_text(encoding="utf-8"))
     assert payload["asked"] == question and payload["items"][0]["asked"]["cause"] == "login"
 
@@ -358,6 +360,13 @@ def ready_login(monkeypatch):
     monkeypatch.setattr(guide, "probe_access", lambda provider: {
         "provider": provider, "login": "ready", "subscription": "unknown", "quota": "unknown",
         "billing": "subscription", "reason": "unverified media access"})
+
+
+def test_the_guide_reports_the_choice_under_the_name_the_setting_is_saved_by(ready_login, monkeypatch):
+    monkeypatch.setattr(guide, "CODEX_UNAVAILABLE_SETTING", "renamed")
+    monkeypatch.setattr(guide, "GENERAL_FIELDS", {"renamed": guide.GENERAL_FIELDS[gen.CODEX_UNAVAILABLE_SETTING]})
+    view = guide.guide("image", choices={"image_provider": "codex"}, confirmed_access=("codex",))
+    assert view["renamed"] == {"choice": "ask", "source": "default"}
 
 
 def test_the_guide_asks_what_to_do_when_codex_cannot_run_once_and_the_answer_is_saved(ready_login, monkeypatch):

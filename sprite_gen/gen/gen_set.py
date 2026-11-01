@@ -37,7 +37,7 @@ from sprite_gen import gen as gen_mod
 from sprite_gen.curate import anchor as anchor_mod
 from sprite_gen.gen.base import ask_codex_unavailable, child_asked, codex_unavailable_question, run_logged
 from sprite_gen.spec import layout
-from sprite_gen.spec.runio import atomic_write_text
+from sprite_gen.spec.runio import REQUEST_FILENAME, atomic_write_text
 from sprite_gen.util.console import utf8_streams
 
 DEFAULT_CONCURRENCY = 6  # lead-verified 2026-08 (no provider throttling at 6-wide); serial one-by-one is the anti-pattern
@@ -224,7 +224,7 @@ def run_set(
 ) -> dict[str, Any]:
     gen_runner = gen_runner or run_gen_cli
     run_dir = run_dir.expanduser().resolve()
-    if not (run_dir / "sprite-request.json").is_file():
+    if not (run_dir / REQUEST_FILENAME).is_file():
         raise SystemExit(f"gen-set: {run_dir} is not a prepared run (no sprite-request.json) — run `sprite-gen prepare` first")
     request = anchor_mod.load_request(run_dir)
     ordered = _row_states(request, states)

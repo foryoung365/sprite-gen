@@ -45,6 +45,7 @@ from . import address, refusal, retry
 from .xai import NO_ANSWER, error_body, read_whole, time_left
 from .base import (
     GEN_TIMEOUT_SECONDS,
+    PROVIDER_OPENAI,
     QUALITIES,
     TRANSPARENCY_NATIVE,
     GenRequest,
@@ -250,7 +251,7 @@ def _ask(url: str, token: str, data: bytes, content_type: str) -> tuple[int, Any
     left of it."""
     deadline = time.monotonic() + GEN_TIMEOUT_SECONDS
     return retry.ask(lambda: http_image(url, token, data, content_type, timeout=GEN_TIMEOUT_SECONDS, deadline=deadline),
-                     provider="openai", who="openai", label="gen", kind=refusal.provider_code, deadline=deadline)
+                     provider=address.OPENAI, who="openai", label="gen", kind=refusal.provider_code, deadline=deadline)
 
 
 def rate_limit_headers(headers: Any) -> dict[str, str]:
@@ -264,7 +265,7 @@ def _refusal(reply: Any) -> refusal.Refusal:
     moderation = error.get("moderation_details") if isinstance(error, dict) else None
     stage = moderation.get("moderation_stage") if isinstance(moderation, dict) else None
     details = (("moderation_stage", stage),) if stage in MODERATION_STAGES else ()
-    return refusal.read("openai", reply, details)
+    return refusal.read(PROVIDER_OPENAI, reply, details)
 
 
 def _publish_image(item: dict, path: Path) -> None:
@@ -281,7 +282,7 @@ def _publish_image(item: dict, path: Path) -> None:
 
 
 class OpenAIProvider:
-    name = "openai"
+    name = PROVIDER_OPENAI
     # `background: transparent` returns a real alpha channel on gpt-image-2.5.
     transparency = TRANSPARENCY_NATIVE
 
@@ -298,7 +299,7 @@ class OpenAIProvider:
         token = resolve_credential()
         announce_api_billing(self.name, AUTH_ENV, f" ({label}).")
         data = json.dumps(body).encode("utf-8")
-        status, reply, _headers, _asks = _ask(address.url("openai", "/responses"), token, data, "application/json")
+        status, reply, _headers, _asks = _ask(address.url(address.OPENAI, "/responses"), token, data, "application/json")
         text, metadata = vision.response_text(status, reply, label=label)
         return text, {**metadata, "auth_source": AUTH_SOURCE_API_KEY, "transport": "openai-api"}
 
@@ -318,7 +319,7 @@ class OpenAIProvider:
             f" (model={fields['model']}, quality={fields['quality']}, size={fields['size']}).",
         )
         started = time.monotonic()
-        status, reply, headers, asks = _ask(address.url("openai", endpoint), token, data, content_type)
+        status, reply, headers, asks = _ask(address.url(address.OPENAI, endpoint), token, data, content_type)
         # The provider's code (and the moderation stage) go in front, format-checked;
         # the body the provider sent goes last, as received, with keys and URL
         # query strings masked (refusal.said).

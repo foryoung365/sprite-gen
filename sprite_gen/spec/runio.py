@@ -923,6 +923,7 @@ def atomic_write_set(payloads: "dict[Path, bytes | str]") -> None:
 # 하나면 스키마 이관을 걸 자리도 하나다 — 열여덟 곳에 같은 이관 코드를 흩뿌리면 그중 하나가
 # 빠진 날 조용히 두 진실이 생긴다.
 REQUEST_FILENAME = "sprite-request.json"
+REQUEST_KIND = "sprite-gen-request"
 
 # 은퇴한 키 -> 현행 키. "pixel perfect" 는 광의 통용어(UI 정합·충돌판정)의 오용이었고, 이
 # 파이프라인이 실제로 하는 일의 정확한 명칭은 커뮤니티 속칭 "unfake"(unfake.js 유래)다

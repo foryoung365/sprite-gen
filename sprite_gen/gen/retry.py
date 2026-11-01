@@ -57,24 +57,29 @@ import sys
 import time
 from typing import Any, Callable
 
+from . import address
+
 START_SECONDS = 4.0
 MAX_SECONDS = 60.0
 RETRY_AFTER_MAX_SECONDS = 120.0
 ASKS_AGAIN = 2
 
 UNTAKEN: dict[str, frozenset[int]] = {
-    "anthropic": frozenset({429, 500, 529}),
-    "openai": frozenset({429, 503}),
-    "xai": frozenset({429}),
-    "elevenlabs": frozenset({429}),
+    address.ANTHROPIC: frozenset({429, 500, 529}),
+    address.OPENAI: frozenset({429, 503}),
+    address.XAI: frozenset({429}),
+    address.ELEVENLABS: frozenset({429}),
 }
 ACT_FIRST: dict[str, frozenset[str]] = {
-    "anthropic": frozenset({"enforced_spend_limit_reached"}),
-    "openai": frozenset({"credit_balance_exhausted", "organization_spend_limit_exceeded",
+    address.ANTHROPIC: frozenset({"enforced_spend_limit_reached"}),
+    address.OPENAI: frozenset({"credit_balance_exhausted", "organization_spend_limit_exceeded",
                          "project_spend_limit_exceeded", "organization_usage_limit_exceeded", "insufficient_quota"}),
-    "xai": frozenset(),
-    "elevenlabs": frozenset(),
+    address.XAI: frozenset(),
+    address.ELEVENLABS: frozenset(),
 }
+# ElevenLabs documents only these two 429 codes as requests it could not process.
+# https://elevenlabs.io/docs/help-center/technical/api-error-code-429 (2026-10-13).
+ELEVENLABS_BUSY = ("system_busy", "too_many_concurrent_requests")
 GET_AGAIN = frozenset({429, 500, 502, 503, 504, 529})
 
 Sleep = Callable[[float], None]
@@ -108,11 +113,9 @@ def _act_first(provider: str, body: Any) -> bool:
 def again_after(provider: str, method: str, status: int, body: Any, headers: Any, failures: int) -> float | None:
     """Seconds to wait before sending the request again after its `failures`-th failed answer in a row,
     or None when it is not sent again (the rule in the module docstring)."""
-    # ElevenLabs documents only these two 429 codes as requests it could not process.
-    # https://elevenlabs.io/docs/help-center/technical/api-error-code-429 (2026-10-13).
-    if provider == "elevenlabs" and method != "GET":
+    if provider == address.ELEVENLABS and method != "GET":
         detail = body.get("detail") if isinstance(body, dict) else None
-        if not isinstance(detail, dict) or detail.get("status") not in ("system_busy", "too_many_concurrent_requests"):
+        if not isinstance(detail, dict) or detail.get("status") not in ELEVENLABS_BUSY:
             return None
     if failures > ASKS_AGAIN:
         return None

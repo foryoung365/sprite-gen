@@ -59,14 +59,14 @@ def codex_inspect(path: Path, workdir: Path, *, prompt: str = INSPECTION_PROMPT,
     # Isolated cwd and ephemeral session: no project instructions, no stale
     # output reuse and no persistent vision rollouts. Uses the existing login,
     # on its config's model and effort unless the call names them.
-    from .codex_provider import announce_codex_billing, codex_login
+    from .codex_provider import BINARY, announce_codex_billing, codex_login
     login = codex_login()
     if login.source is None:
         raise SystemExit(f"{_tag(label)}: {login.reason}")
     announce_codex_billing(login, f" ({label})")
     with tempfile.TemporaryDirectory(prefix="facing-", dir=workdir) as directory:
         output = Path(directory) / "answer.txt"
-        command = [provider_binary("codex"), "exec", "--sandbox", "read-only",
+        command = [provider_binary(BINARY), "exec", "--sandbox", "read-only",
                    "--skip-git-repo-check", "--ephemeral", "--color", "never", "-C", directory]
         if model:
             command += ["--model", model]
@@ -116,7 +116,7 @@ def grok_inspect(path: Path, *, credential=None, call=None, prompt: str = INSPEC
     # The question's time limit is the transport's read timeout, from its first send: the waits before a
     # refused one goes again count in it (`retry`), and each send reads only what is left of it.
     send, deadline = call or xai.http_json, time.monotonic() + xai.HTTP_TIMEOUT_SECONDS
-    status, reply, _sends = xai.post(lambda *a: send(*a, deadline=deadline), address.url("xai", "/responses"),
+    status, reply, _sends = xai.post(lambda *a: send(*a, deadline=deadline), address.url(address.XAI, "/responses"),
                                      credential.token, request_body(path, GROK_MODEL, prompt=prompt, detail=detail),
                                      who="grok", label=_tag(label), deadline=deadline)
     text, metadata = response_text(status, reply, label=label)

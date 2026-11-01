@@ -27,22 +27,22 @@ KIND = "sprite-gen-capabilities"
 # `base.logins_on`); `curation` reaches xAI by its reroll and in-between buttons (codex or grok); `video-set` makes
 # each clip with `video` and checks a side view's facing on Grok.
 PROVIDER_CALLS: dict[str, tuple[str, ...]] = {
-    "gen": ("openai", "xai"),
-    "gen-set": ("openai", "xai"),
-    "logo": ("openai", "xai"),
-    "pixel-draw": ("anthropic",),
-    "sound": ("elevenlabs",),
-    "curation": ("xai",),
-    "video": ("xai",),
-    "video-extend": ("xai",),
-    "video-edit": ("xai",),
-    "video-resume": ("xai",),
-    "video-set": ("xai",),
+    "gen": (address.OPENAI, address.XAI),
+    "gen-set": (address.OPENAI, address.XAI),
+    "logo": (address.OPENAI, address.XAI),
+    "pixel-draw": (address.ANTHROPIC,),
+    "sound": (address.ELEVENLABS,),
+    "curation": (address.XAI,),
+    "video": (address.XAI,),
+    "video-extend": (address.XAI,),
+    "video-edit": (address.XAI,),
+    "video-resume": (address.XAI,),
+    "video-set": (address.XAI,),
 }
 # Verbs that call a provider and buy nothing: `video-resume` polls and downloads a clip an earlier run bought.
 NO_PURCHASE = frozenset({"video-resume"})
-KEY_ENVS = {"openai": openai_provider.AUTH_ENV, "xai": xai.AUTH_ENV, "anthropic": anthropic_api.AUTH_ENV,
-            "elevenlabs": sound_provider.AUTH_ENV}
+KEY_ENVS = {address.OPENAI: openai_provider.AUTH_ENV, address.XAI: xai.AUTH_ENV,
+            address.ANTHROPIC: anthropic_api.AUTH_ENV, address.ELEVENLABS: sound_provider.AUTH_ENV}
 # Argument types by name; any other is its parsing function's name without `_` and `parse_` (`_parse_grid`: grid).
 TYPES = {str: None, int: "int", float: "float"}
 

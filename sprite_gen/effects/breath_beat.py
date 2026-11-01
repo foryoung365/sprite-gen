@@ -27,7 +27,7 @@ from typing import Any
 from PIL import Image
 
 from sprite_gen._deps import np
-from sprite_gen.curate.curation import BREATHE_BREATHS_MAX
+from sprite_gen.curate.curation import BREATHE_BREATHS_MAX, BREATHE_SMOOTH
 from sprite_gen.effects import breathe
 from sprite_gen.video import auto_motion
 
@@ -61,7 +61,7 @@ def _corr(a: np.ndarray, b: np.ndarray) -> float:
 
 def _row(beat: dict, n: int, hands: np.ndarray, body: np.ndarray, lift: float, inhale: float) -> dict[str, Any]:
     """한 박자 후보의 점수와 조건 — 그 박자와 들숨 몫으로 굽기가 쓸 위상과 곡선에서."""
-    phases = breathe.fit_breathe_pattern(n, {"mode": "smooth", "inhale": inhale, **beat})
+    phases = breathe.fit_breathe_pattern(n, {"mode": BREATHE_SMOOTH, "inhale": inhale, **beat})
     w = np.asarray([breathe.smooth_wave(p, inhale) for p in phases])
     peaks = [i for i in range(n) if w[i] > PEAK_LEVEL and w[i] >= w[i - 1] and w[i] >= w[(i + 1) % n]]
     margin = min(lift * w[p] - max(hands[(p + j) % n] for j in range(-NEAR, NEAR + 1)) for p in peaks)

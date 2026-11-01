@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from .base import HIGGSFIELD_CREDIT_WORDS, provider_binary, provider_subprocess_env
+from .base import HIGGSFIELD_CREDIT_WORDS, PROVIDER_HIGGSFIELD, provider_binary, provider_subprocess_env
 
 BINARY = "higgsfield"
 # Replaces the binary (the test suite points it at nothing, so no test can spend credits).
@@ -238,6 +238,6 @@ def run_job(job: Job, *, who: str, timeout: float, detail: str = "",
     reply = wait(job_id, deadline=started + timeout, run=run)
     url = result_url(reply)
     data = download(url)
-    return data, {"provider": "higgsfield", "model": job.job_type, "job_id": job_id, "credits": credits,
+    return data, {"provider": PROVIDER_HIGGSFIELD, "model": job.job_type, "job_id": job_id, "credits": credits,
                   "auth_source": "higgsfield-login", "transport": "higgsfield-cli",
                   "elapsed_seconds": round(time.monotonic() - started, 3)}

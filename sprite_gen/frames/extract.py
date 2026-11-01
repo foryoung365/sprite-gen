@@ -20,7 +20,7 @@ from PIL import Image, ImageChops
 
 from sprite_gen.util.cli_kwargs import namespace_from_kwargs
 from sprite_gen._deps import np
-from sprite_gen.curate.curation import effective_logical_height, pixel_snap_scale
+from sprite_gen.curate.curation import CURATION_FILENAME, effective_logical_height, pixel_snap_scale
 from sprite_gen.spec.layout import frames_dir_rel, raw_rel, take_raw_rel
 from sprite_gen.spec.runio import (REQUEST_FILENAME, acquire_run_dir_lock, atomic_save_image,
                               atomic_write_text, load_request, publish_guard, relative_posix,
@@ -529,6 +529,12 @@ _SPILL_MIN_TINT = 40.0
 # reference at this same threshold before choosing full correction.
 _SPILL_FULL_MIN_TINT = 8.0
 DEFAULT_UNMIX_REACH = 4
+# The edge decontamination pass after the matte (`sprite_gen.frames.decontam`): "palette" runs the pass and fails loud
+# when it cannot; "auto" runs it wherever it applies (a chroma key, a subject interior to learn from) and otherwise
+# reports why it did not; "off" leaves the matte as it is.
+OFF, AUTO, PALETTE = DECONTAM_MODES = ("off", "auto", "palette")
+# The background matting path (`--chroma-mode`, the request's chroma.mode): the RGB engine or chrominance-plane matting.
+CHROMA_RGB, CHROMA_YCBCR = CHROMA_MODES = ("rgb", "ycbcr")
 
 
 def hard_key_mask(source_rgb: np.ndarray, alpha: np.ndarray, chroma_key: tuple[int, int, int],
@@ -656,7 +662,7 @@ def remove_chroma_background(
     spill_min_tint: float = _SPILL_MIN_TINT,
     spill_require_hue: bool = False,
     background_key: tuple[int, int, int] | None = None,
-    decontam: str = "off",
+    decontam: str = OFF,
     decontam_fit: str = "still",
     decontam_palette: dict[str, Any] | None = None,
     decontam_stats: dict[str, Any] | None = None,
@@ -678,14 +684,14 @@ def remove_chroma_background(
     `decontam_edge_band` keeps the frame edge as the matte left it (`decontaminate`'s `edge_band`),
     and `decontam_history` is a clip's record of its last frame for the video fit (`decontaminate`'s `history`).
     """
-    if decontam != "off":
+    if decontam != OFF:
         from sprite_gen.frames import decontam as decontam_module
         decontam_module.validate(decontam, decontam_fit)
     rgba = image.convert("RGBA")
     width, height = rgba.size
     data = np.array(rgba, dtype=np.uint8)  # (H, W, 4); written back at the end
     source_rgb = data[..., :3].astype(np.int32)
-    source_alpha = data[..., 3].copy() if decontam != "off" else None  # coverage decontam may give back
+    source_alpha = data[..., 3].copy() if decontam != OFF else None  # coverage decontam may give back
     keyed_channels, unkeyed_channels = _key_channel_split(chroma_key)
     unseen = 255
 
@@ -840,7 +846,7 @@ def remove_chroma_background(
                 )
                 if coverage > 0:
                     data[y, x] = (*despilled, alpha)
-    if decontam != "off":
+    if decontam != OFF:
         data, stats = decontam_module.decontaminate(source_rgb, data, keyed_mask, chroma_key, fit=decontam_fit,
                                                     alpha_depth=unmix_reach, palette=decontam_palette, mode=decontam,
                                                     source_alpha=source_alpha, edge_band=decontam_edge_band,
@@ -1180,7 +1186,7 @@ def remove_chroma_background_ycbcr(
     chroma_key: tuple[int, int, int],
     warnings: list[str] | None = None,
     *,
-    decontam: str = "off",
+    decontam: str = OFF,
     decontam_fit: str = "still",
     decontam_palette: dict[str, Any] | None = None,
     decontam_stats: dict[str, Any] | None = None,
@@ -1199,7 +1205,7 @@ def remove_chroma_background_ycbcr(
     over this matte's output; its geometry is the RGB path's hard cut at the
     default `--key-threshold`, so both mattes share one definition of the edge.
     """
-    if decontam != "off":
+    if decontam != OFF:
         from sprite_gen.frames import decontam as decontam_module
         decontam_module.validate(decontam, decontam_fit)
 
@@ -1244,7 +1250,7 @@ def remove_chroma_background_ycbcr(
                 out = retry
 
     _cleanup_alpha_ycc(out)
-    if decontam != "off":
+    if decontam != OFF:
         source = np.array(rgba, dtype=np.uint8)
         source_rgb = source[..., :3].astype(np.int32)
         painted = detect_background_key_rgb(rgba, chroma_key, DEFAULT_KEY_THRESHOLD)
@@ -2844,7 +2850,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--chroma-mode",
-        choices=("rgb", "ycbcr"),
+        choices=CHROMA_MODES,
         default=None,
         help="background matting path; overrides request chroma.mode "
         "(ycbcr = chrominance-plane matting with border-mode key detection, "
@@ -2852,7 +2858,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--decontam",
-        choices=("off", "auto", "palette"),
+        choices=DECONTAM_MODES,
         default=None,
         help="edge decontamination after the matte; overrides request chroma.decontam "
         "(palette = re-explain key-tinted edges with the subject's own colours, auto = where it "
@@ -3206,16 +3212,16 @@ def _run_locked(args: argparse.Namespace, run_dir: Path):
     chroma_mode = (
         args.chroma_mode
         if args.chroma_mode is not None
-        else str(chroma_config.get("mode", "rgb"))
+        else str(chroma_config.get("mode", CHROMA_RGB))
     )
-    if chroma_mode not in ("rgb", "ycbcr"):
+    if chroma_mode not in CHROMA_MODES:
         raise SystemExit("chroma.mode must be 'rgb' or 'ycbcr'")
     decontam_mode = (
         args.decontam
         if args.decontam is not None
-        else str(chroma_config.get("decontam", "off"))
+        else str(chroma_config.get("decontam", OFF))
     )
-    if decontam_mode not in ("off", "auto", "palette"):
+    if decontam_mode not in DECONTAM_MODES:
         raise SystemExit("chroma.decontam must be 'off', 'auto' or 'palette'")
     effective_chroma = {
         **chroma_config,
@@ -3224,13 +3230,13 @@ def _run_locked(args: argparse.Namespace, run_dir: Path):
         "spill_max_fraction": spill_max_fraction,
     }
     # Recorded once it is in play, so a run keyed before decontam existed keeps its request bytes.
-    if decontam_mode != "off" or "decontam" in chroma_config:
+    if decontam_mode != OFF or "decontam" in chroma_config:
         effective_chroma["decontam"] = decontam_mode
-    decontam_kwargs = {} if decontam_mode == "off" else {"decontam": decontam_mode}
+    decontam_kwargs = {} if decontam_mode == OFF else {"decontam": decontam_mode}
     if effective_chroma != chroma_config:
         request["chroma"] = effective_chroma
         atomic_write_text(
-            run_dir / "sprite-request.json",
+            run_dir / REQUEST_FILENAME,
             json.dumps(request, ensure_ascii=False, indent=2) + "\n",
         )
     states = list(request["states"]) if args.states == "all" else [state.strip() for state in args.states.split(",") if state.strip()]
@@ -3390,7 +3396,7 @@ def _run_locked(args: argparse.Namespace, run_dir: Path):
             all_errors.append(f"{tag}: missing raw strip {raw_path}")
             return None
         with Image.open(raw_path) as opened:
-            if chroma_mode == "ycbcr":
+            if chroma_mode == CHROMA_YCBCR:
                 ycc_notes: list[str] = []
                 strip = remove_chroma_background_ycbcr(opened, chroma_key, ycc_notes, **decontam_kwargs)
                 all_warnings.extend(f"{tag}: {note}" for note in ycc_notes)
@@ -3578,7 +3584,7 @@ def _run_locked(args: argparse.Namespace, run_dir: Path):
     total_steps = len(states) * 2  # 1패스(컴포넌트/스냅) + 2패스(팔레트/배치)
     progress_step = 0
     for state in states:
-        _write_progress(run_dir, "extract", progress_step, total_steps, state, "components")
+        _write_progress(run_dir, "extract", progress_step, total_steps, state, PROGRESS_PHASE_COMPONENTS)
         progress_step += 1
         if state not in request["states"]:
             raise SystemExit(f"unknown state in request: {state}")
@@ -3831,7 +3837,7 @@ def heal_run(run_dir: Path | str) -> dict[str, Any]:
     행은 스테이징+스왑 경로가 이전 세대를 바이트 그대로 남긴다 (Atomicity).
     """
     run_dir = Path(run_dir)
-    report: dict[str, Any] = {"healed": [], "kept_stale": [], "notes": []}
+    report: dict[str, Any] = {HEAL_HEALED: [], HEAL_KEPT_STALE: [], HEAL_NOTES: []}
     manifest_path = run_dir / "frames" / "frames-manifest.json"
     request_path = run_dir / REQUEST_FILENAME
     if not manifest_path.is_file() or not request_path.is_file():
@@ -3844,7 +3850,7 @@ def heal_run(run_dir: Path | str) -> dict[str, Any]:
     # 재유도하지 않는다 (회귀: 서버 가동 중 엔진 편집 → heal 이 확정 down_idle 을
     # 재양자화해 드리프트). 해제는 사용자가 frozen 을 끄는 것뿐 — 관측 노트로 남긴다.
     frozen: set[str] = set()
-    curation_path = run_dir / "curation.json"
+    curation_path = run_dir / CURATION_FILENAME
     if curation_path.is_file():
         try:
             cur_states = json.loads(curation_path.read_text(encoding="utf-8")).get("states", {})
@@ -3864,17 +3870,17 @@ def heal_run(run_dir: Path | str) -> dict[str, Any]:
             for take in (request["states"][state].get("takes") or [])
         ]
         if all((run_dir / rel).is_file() for rel in raws):
-            report["healed"].append(state)
+            report[HEAL_HEALED].append(state)
         else:
-            report["kept_stale"].append(state)
+            report[HEAL_KEPT_STALE].append(state)
     if frozen_kept:
-        report["frozen"] = frozen_kept
-        report["notes"].append("frozen rows kept (user-approved, heal skipped): " + ", ".join(frozen_kept))
-    if report["kept_stale"]:
-        report["notes"].append(
+        report[HEAL_FROZEN] = frozen_kept
+        report[HEAL_NOTES].append("frozen rows kept (user-approved, heal skipped): " + ", ".join(frozen_kept))
+    if report[HEAL_KEPT_STALE]:
+        report[HEAL_NOTES].append(
             "stale rows kept as-is (raw missing, cannot re-derive): "
-            + ", ".join(report["kept_stale"]))
-    if report["healed"]:
+            + ", ".join(report[HEAL_KEPT_STALE]))
+    if report[HEAL_HEALED]:
         # 서브프로세스로 재추출한다: run-dir 락은 atexit 해제라, 장수 프로세스
         # (큐레이션 서버)가 인프로세스로 추출하면 락을 영구 보유해 이후의
         # compose/export 서브프로세스가 전부 죽는다. 자식 프로세스면 락 수명이
@@ -3901,28 +3907,43 @@ def heal_run(run_dir: Path | str) -> dict[str, Any]:
         env = dict(os.environ)
         env["PYTHONPATH"] = (str(Path(__file__).resolve().parents[1])
                              + os.pathsep + env.get("PYTHONPATH", ""))
-        candidates = report["healed"]
-        report["healed"] = []
-        report["failed"] = []
+        candidates = report[HEAL_HEALED]
+        report[HEAL_HEALED] = []
+        report[HEAL_FAILED] = []
         for state in candidates:
             cmd = [sys.executable, "-m", "sprite_gen.frames.extract",
                    "--run-dir", str(run_dir), "--states", state, *extract_flags]
             proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
             if proc.returncode == 0:
-                report["healed"].append(state)
+                report[HEAL_HEALED].append(state)
             else:
-                report["failed"].append(state)
+                report[HEAL_FAILED].append(state)
                 tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-3:]
-                report["notes"].append(
+                report[HEAL_NOTES].append(
                     f"heal re-extract failed for {state} — prior generation kept: "
                     + " | ".join(tail))
-        if not report["failed"]:
-            del report["failed"]
+        if not report[HEAL_FAILED]:
+            del report[HEAL_FAILED]
     return report
 
 
 
 PROGRESS_REL = ".sprite-gen.progress.json"
+# 진행 파일의 키 — 큐레이션 서버가 파일째로 실어 보내고 큐레이터가 읽는다 (progress.js·i18n.js).
+PROGRESS_OP = "op"
+PROGRESS_DONE = "done"
+PROGRESS_TOTAL = "total"
+PROGRESS_LABEL = "label"
+PROGRESS_PHASE = "phase"
+PROGRESS_TS = "ts"
+PROGRESS_PHASE_COMPONENTS = "components"  # i18n.js 의 ko 문구가 이 값에 갈린다
+# heal_run 보고의 키 — 큐레이션 서버가 같은 모양을 만들고(_run_heal·_durable_failed_heal_report)
+# `run.heal` 로 실어 보내면 큐레이터가 읽는다 (boot.js). frozen·failed 는 있을 때만 실린다.
+HEAL_HEALED = "healed"
+HEAL_KEPT_STALE = "kept_stale"
+HEAL_FAILED = "failed"
+HEAL_FROZEN = "frozen"
+HEAL_NOTES = "notes"
 
 
 def _write_progress(run_dir: Path, op: str, done: int, total: int, label: str, phase: str) -> None:
@@ -3933,8 +3954,8 @@ def _write_progress(run_dir: Path, op: str, done: int, total: int, label: str, p
     import time as _time
     try:
         atomic_write_text(run_dir / PROGRESS_REL, json.dumps({
-            "op": op, "done": done, "total": total, "label": label,
-            "phase": phase, "ts": _time.time()}, ensure_ascii=False))
+            PROGRESS_OP: op, PROGRESS_DONE: done, PROGRESS_TOTAL: total, PROGRESS_LABEL: label,
+            PROGRESS_PHASE: phase, PROGRESS_TS: _time.time()}, ensure_ascii=False))
     except OSError:
         pass
 

@@ -29,7 +29,8 @@ from sprite_gen._deps import np
 from PIL import Image
 
 from sprite_gen.spec.assets import sequence_identity
-from sprite_gen.spec.runio import acquire_run_dir_lock, atomic_write_set, release_run_dir_lock, same_folder
+from sprite_gen.spec.runio import (LOCK_FILENAME, RWLOCK_SUFFIX, acquire_run_dir_lock, atomic_write_set,
+                                   release_run_dir_lock, same_folder)
 from sprite_gen.util.cli_kwargs import namespace_from_kwargs
 from sprite_gen.util.console import utf8_streams
 
@@ -38,6 +39,9 @@ if TYPE_CHECKING:
 
 
 NEAR_SILHOUETTE_IOU = 0.98
+# What an inspect-motion report is (its `kind`): a scene's stride reads a report only when it says this
+# (`scene.model`).
+REPORT_KIND = "sprite-gen-motion-report"
 
 
 def _number(value, name):
@@ -379,7 +383,7 @@ def analyze_motion(sequence: FrameSequence, *, contacts=None, foot_box=None, fac
     if exact or exact_silhouette or near_silhouette:
         warnings.append("Repeated poses retain all source frame durations; no frames were removed.")
     return {
-        "kind": "sprite-gen-motion-report", "version": 1, "status": status,
+        "kind": REPORT_KIND, "version": 1, "status": status,
         "frame_count": len(frames), "duration_seconds": elapsed, "size": [width, height],
         "anchor_px": anchor, "facing": facing, "contacts": spans, "foot_box": list(box) if box else None,
         "duplicate_frames": {"exact": exact, "adjacent_exact": adjacent_exact,
@@ -425,7 +429,7 @@ def _output_path(out, source, sequence):
     protected = {Path(source).expanduser().resolve(), *(Path(p).resolve() for p in sequence.source_files)}
     if any(same_folder(path, p) for p in protected):
         raise ValueError("motion report must not overwrite an asset source file")
-    if path.name == ".sprite-gen.lock" or path.name.endswith(".sg-rwlock"):
+    if path.name == LOCK_FILENAME or path.name.endswith(RWLOCK_SUFFIX):
         raise ValueError("motion report must not overwrite an output lock")
     if path.exists() and not path.is_file():
         raise ValueError("motion report output must be a file")

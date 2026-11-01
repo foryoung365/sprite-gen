@@ -47,6 +47,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable
 
+from sprite_gen.frames import extract as extract_mod
+from sprite_gen.frames.cutout import MAGENTA
 from sprite_gen.spec.runio import atomic_write_text
 from sprite_gen.util.cli_kwargs import namespace_from_kwargs
 from sprite_gen.video import body_plan as body_mod
@@ -59,6 +61,10 @@ from . import handedness as handed_mod
 from . import prompt_parts
 from .base import (
     CODEX_UNAVAILABLE_EXIT,
+    PROVIDER_CODEX,
+    PROVIDER_GROK,
+    PROVIDER_HIGGSFIELD,
+    PROVIDER_OPENAI,
     QUALITIES,
     RESOLUTIONS,
     TRANSPARENCY_CHROMA,
@@ -79,7 +85,7 @@ from .higgsfield_provider import HiggsfieldProvider
 from .openai_provider import OpenAIProvider
 from sprite_gen.util.console import utf8_streams
 
-PROVIDERS = ("codex", "grok", "openai", "higgsfield")
+PROVIDERS = (PROVIDER_CODEX, PROVIDER_GROK, PROVIDER_OPENAI, PROVIDER_HIGGSFIELD)
 # `--alpha-mode`: `auto` reads the provider's declared strategy (the SSoT);
 # `native` / `chroma` force one. Forcing `native` on a chroma-only provider fails
 # loud — a strategy the backend cannot execute is not a fallback candidate.
@@ -95,13 +101,13 @@ DEFAULT_PROVIDER_ENV = "SPRITE_GEN_DEFAULT_PROVIDER"
 # SPRITE_GEN_HARD_DEFAULT_PROVIDER replaces it at import (the test suite sets codex to run upstream's tests on
 # upstream's default); SPRITE_GEN_DEFAULT_PROVIDER, read at every call, still comes first.
 HARD_DEFAULT_PROVIDER_ENV = "SPRITE_GEN_HARD_DEFAULT_PROVIDER"
-HARD_DEFAULT_PROVIDER = os.environ.get(HARD_DEFAULT_PROVIDER_ENV, "").strip() or "higgsfield"
+HARD_DEFAULT_PROVIDER = os.environ.get(HARD_DEFAULT_PROVIDER_ENV, "").strip() or PROVIDER_HIGGSFIELD
 if HARD_DEFAULT_PROVIDER not in PROVIDERS:
     raise SystemExit(f"gen: {HARD_DEFAULT_PROVIDER_ENV}={HARD_DEFAULT_PROVIDER!r} is not a known provider")
 # A per-call API-billed backend is never a default: only a choice the user made
 # reaches it, so nothing routes a subscription user onto metered credit unasked
 # (구독 우선 불변식 1-2).
-EXPLICIT_ONLY_PROVIDERS = ("openai",)
+EXPLICIT_ONLY_PROVIDERS = (PROVIDER_OPENAI,)
 # What a default codex that cannot run here turns into (수홍 2026-10-16, docs/gen.md "When codex cannot run"):
 # codex is not signed in (`codex_provider.codex_login`), or `codex exec` said its usage is used up
 # (`codex_provider.CodexUsageLimit`). `ask` (the default) ends the call with one question and nothing generated
@@ -110,8 +116,9 @@ EXPLICIT_ONLY_PROVIDERS = ("openai",)
 # key CODEX_UNAVAILABLE_SETTING), else `ask`. Until 2.44.0 it went to grok unasked.
 CODEX_UNAVAILABLE_ENV = "SPRITE_GEN_CODEX_UNAVAILABLE"
 CODEX_UNAVAILABLE_SETTING = "codex_unavailable"
-CODEX_UNAVAILABLE_CHOICES = ("ask", "grok", "openai", "higgsfield")
-CODEX_UNAVAILABLE_DEFAULT = "ask"
+CODEX_UNAVAILABLE_ASK = "ask"
+CODEX_UNAVAILABLE_CHOICES = (CODEX_UNAVAILABLE_ASK, PROVIDER_GROK, PROVIDER_OPENAI, PROVIDER_HIGGSFIELD)
+CODEX_UNAVAILABLE_DEFAULT = CODEX_UNAVAILABLE_ASK
 
 # `--layout-guide`: the one-slot form of the guide `prepare` draws for every row
 # (`draw_guide`, the same 9.4 % safe margin), attached after the caller's refs, with
@@ -234,13 +241,13 @@ def ui_kit_guide_size(aspect_ratio: str | None) -> tuple[int, int]:
 
 
 def _make_provider(name: str, *, keep_session: bool):
-    if name == "codex":
+    if name == PROVIDER_CODEX:
         return CodexProvider(keep_session=keep_session)
-    if name == "grok":
+    if name == PROVIDER_GROK:
         return GrokProvider()
-    if name == "openai":
+    if name == PROVIDER_OPENAI:
         return OpenAIProvider()
-    if name == "higgsfield":
+    if name == PROVIDER_HIGGSFIELD:
         return HiggsfieldProvider()
     raise SystemExit(f"gen: unknown provider {name!r}; expected one of {', '.join(PROVIDERS)}")
 
@@ -335,7 +342,7 @@ def resolve_default_provider() -> tuple[str, dict[str, str] | None]:
 
     # Only a codex default turns into the user's choice. A grok default that is down
     # fails loud at generation time rather than reverse-falling back to codex.
-    if default == "codex":
+    if default == PROVIDER_CODEX:
         ok, reason = _codex_available()
         if not ok:
             return codex_unavailable("login", reason, default_source=source)
@@ -374,9 +381,9 @@ def codex_unavailable(cause: str, reason: str, *, default_source: str) -> tuple[
     the user's choice: raises the question (`CodexUnavailableAsk`) for `ask`, else returns the chosen provider and
     the switch the report keeps as `provider_fallback`."""
     choice, chosen_by = codex_unavailable_choice()
-    if choice == "ask":
+    if choice == CODEX_UNAVAILABLE_ASK:
         raise ask_codex_unavailable(codex_unavailable_question(cause, reason))
-    return choice, {"from": "codex", "to": choice, "cause": cause, "reason": reason,
+    return choice, {"from": PROVIDER_CODEX, "to": choice, "cause": cause, "reason": reason,
                     "default_source": default_source, "chosen_by": chosen_by}
 
 
@@ -459,12 +466,12 @@ def generate_image(
     resolution: str | None = None,
     transparent: bool = False,
     alpha_mode: str = ALPHA_MODE_AUTO,
-    chroma_key: str = "magenta",
+    chroma_key: str = MAGENTA,
     white_check: Path | None = None,
     trim_alpha: bool = False,
     keep_session: bool = False,
     workdir: Path | None = None,
-    decontam: str = "off",
+    decontam: str = extract_mod.OFF,
     layout_guide: bool | str | None = False,
 ) -> GenResult:
     """Generate one image and return a GenResult. Raises SystemExit on any failure.
@@ -473,9 +480,9 @@ def generate_image(
     guide_kind = layout_guide_kind(layout_guide)
     if guide_kind == "ui-kit":
         ui_kit_guide_size(aspect_ratio)
-    if decontam not in ("off", "auto", "palette"):
+    if decontam not in extract_mod.DECONTAM_MODES:
         raise SystemExit(f"gen: unknown --decontam {decontam!r}; expected off|auto|palette")
-    if decontam == "palette" and not transparent:
+    if decontam == extract_mod.PALETTE and not transparent:
         raise SystemExit("gen: --decontam applies to the chroma key of a --transparent image; add --transparent")
     prompt = (prompt or "").strip()
     if not prompt:
@@ -498,7 +505,7 @@ def generate_image(
         # The layout guide is an attached image as much as a --ref is: the same step down applies.
         attached_for_strategy = [*refs, Path(LAYOUT_GUIDE_NAME)] if guide_kind else refs
         strategy, strategy_source = resolve_transparency_strategy(backend, alpha_mode, refs=attached_for_strategy)
-        if decontam == "palette" and strategy != TRANSPARENCY_CHROMA:
+        if decontam == extract_mod.PALETTE and strategy != TRANSPARENCY_CHROMA:
             # before the provider is called: a paid generation must not end in this refusal
             raise SystemExit(f"gen: --decontam removes a chroma key; this image would use {strategy} alpha "
                              "(pass --alpha-mode chroma to key it instead)")
@@ -574,7 +581,7 @@ def generate_image(
         if strategy_source == STRATEGY_SOURCE_REFS:
             raw_alpha = chroma_mod.classify_raw_alpha(raw)
             if raw_alpha["verdict"] == chroma_mod.RAW_ALPHA_REAL:
-                if decontam != "off":
+                if decontam != extract_mod.OFF:
                     # The generation is paid for and its alpha is good: decontam has no key to
                     # remove, so it is skipped and said, not refused (see the refusal before the call).
                     decontam_skipped = {
@@ -582,7 +589,7 @@ def generate_image(
                         "skipped": f"the raw came back with a transparent background "
                                    f"({raw_alpha['alpha_zero_pct']}% alpha 0) and has no key to remove",
                     }
-                    print(f"[gen] {'warning: ' if decontam == 'palette' else ''}--decontam {decontam} skipped: "
+                    print(f"[gen] {'warning: ' if decontam == extract_mod.PALETTE else ''}--decontam {decontam} skipped: "
                           f"{decontam_skipped['skipped']}", file=sys.stderr)
                 strategy, strategy_source = TRANSPARENCY_NATIVE, STRATEGY_SOURCE_REFS_RAW_ALPHA
                 print(
@@ -748,7 +755,7 @@ def _run(args: argparse.Namespace) -> int:
         trim_alpha=bool(getattr(args, "trim_alpha", False)),
         keep_session=args.keep_session,
         workdir=args.workdir,
-        decontam=str(getattr(args, "decontam", None) or "off"),
+        decontam=str(getattr(args, "decontam", None) or extract_mod.OFF),
         layout_guide=getattr(args, "layout_guide", None),
     ))
     payload = result.to_dict()
@@ -840,13 +847,13 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--decontam",
-        choices=("off", "auto", "palette"),
-        default="off",
+        choices=extract_mod.DECONTAM_MODES,
+        default=extract_mod.OFF,
         help="chroma keying: re-explain key-tinted edges (hair strands, outlines) with the subject's own "
         "colours after the matte. off (default) publishes the matte as it is; auto runs it where it "
         "applies (chroma strategy, a subject interior); palette demands it",
     )
-    parser.add_argument("--chroma-key", choices=sorted(chroma_mod.KEYS), default="magenta")
+    parser.add_argument("--chroma-key", choices=sorted(chroma_mod.KEYS), default=MAGENTA)
     parser.add_argument("--facing", choices=(*facing_mod.FACINGS, "preserve"), default="preserve", help="with --ref: required direction; preserve (default) leaves prompt and pixels unchanged")
     parser.add_argument("--facing-fix", choices=facing_mod.FIXES, default="none", help="with --ref and --facing: record only (none, default), or opt into mirror / one regen")
     parser.add_argument("--direction", choices=handed_mod.VIEWS, help="draw the still at this sprite view: the engine's view sentence is added to the prompt (side and diagonal views also take --facing right|left)")

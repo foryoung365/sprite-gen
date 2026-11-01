@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
 from sprite_gen.effects.breathe import fit_breathe_pattern  # noqa: E402
-from sprite_gen.curate.curation import state_breathe  # noqa: E402
+from sprite_gen.curate.curation import CURATION_KIND, state_breathe  # noqa: E402
 from sprite_gen.serve.serve_curation import CURATOR_DIR  # noqa: E402
 
 CURATOR = CURATOR_DIR / "src"
@@ -111,6 +111,8 @@ def test_curator_preserves_a_retired_breathe_sidecar(tmp_path):
                        "frames": [{"index": 0, "present": True}, {"index": 1, "present": True}]}],
            "curation": {"states": {"idle": {"selected": [0, 1], "breathe": breathe}}}}
     got = _roundtrip(run, tmp_path)
+    # 저장 payload 의 kind 가 다르면 서버(write_curation_atomic)가 모든 autosave 를 거부한다.
+    assert got["payload"]["kind"] == CURATION_KIND, f"buildPayload 의 kind 가 갈렸다: {got['payload']['kind']!r}"
     saved = got["payload"]["states"]["idle"].get("breathe")
     assert saved is not None, "splits: 저장 payload 에서 breathe 가 통째로 사라졌다"
     assert "splits" in saved, "splits: 폐기 키가 삭제됐다 — migrate 근거가 파괴된다"

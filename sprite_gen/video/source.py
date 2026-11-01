@@ -118,7 +118,7 @@ class Source:
                     raise ValueError("source must contain PNG frames")
                 images.append(im.convert("RGBA"))
             hashes.append(bytes.fromhex(evidence.digest(blob)))
-        identity = {"kind": "keyed-frame-sequence", "sha256": evidence.digest(b"".join(hashes)),
+        identity = {"kind": evidence.SOURCE_KIND, "sha256": evidence.digest(b"".join(hashes)),
                     "frames": len(images), "fps": fps}
         if m.get("source") != identity or report.get("frames") != len(images):
             raise ValueError("source sequence identity differs from actual files")
@@ -167,7 +167,7 @@ def project(baseline: Any, source: Source) -> tuple[Projection | None, str | Non
     from sprite_gen.video.frames import drop_specks
 
     m, report = baseline.meta, baseline.source_report
-    if report.get("kind") != "sprite-gen-video-loop-report" or report.get("status") != "passed":
+    if report.get("kind") != loop.REPORT_KIND or report.get("status") != loop.REPORT_PASSED:
         return None, "source-report-unverified"
     if loop.sway_recorded(m):
         return None, "follow-source-warp-unverified"

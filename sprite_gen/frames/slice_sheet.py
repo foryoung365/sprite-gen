@@ -49,16 +49,12 @@ from PIL import Image
 
 from sprite_gen._deps import np
 from sprite_gen.frames.alpha_floor import clear_haze
+from sprite_gen.frames.cutout import KEY_TARGETS
 from sprite_gen.frames.extract import remove_chroma_background
 from sprite_gen.spec.runio import atomic_write_text
 from sprite_gen.util.hexcolor import parse_hex
 from sprite_gen.util.resample import resize_cell
 from sprite_gen.util.console import utf8_streams
-
-CHROMA_KEYS = {
-    "magenta": (255, 0, 255),
-    "green": (0, 255, 0),
-}
 
 DEFAULT_KEY_THRESHOLD = 96.0
 DEFAULT_FRINGE_KEY_THRESHOLD = 180.0
@@ -84,8 +80,8 @@ def parse_chroma_key(value: str) -> tuple[int, int, int] | None:
     name = value.strip().lower()
     if name == "none":
         return None
-    if name in CHROMA_KEYS:
-        return CHROMA_KEYS[name]
+    if name in KEY_TARGETS:
+        return KEY_TARGETS[name]
     try:
         return parse_hex(name)
     except ValueError:

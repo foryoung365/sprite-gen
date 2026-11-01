@@ -41,8 +41,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fringe-delta", type=float, default=18.0)
     parser.add_argument("--fringe-unmix-reach", type=int, default=None)
     parser.add_argument("--spill-max-fraction", type=float, default=None)
-    parser.add_argument("--chroma-mode", choices=("rgb", "ycbcr"), default=None)
-    parser.add_argument("--decontam", choices=("off", "auto", "palette"), default=None)
+    parser.add_argument("--chroma-mode", choices=extract.CHROMA_MODES, default=None)
+    parser.add_argument("--decontam", choices=extract.DECONTAM_MODES, default=None)
     parser.add_argument("--no-write", action="store_true")
     return parser
 
@@ -88,7 +88,7 @@ def _strip_for_state(run_dir: Path, request: dict[str, Any], state: str, args: a
     if not raw_path.is_file():
         return None
     chroma_config = dict(request.get("chroma") or {})
-    chroma_mode = args.chroma_mode if args.chroma_mode is not None else str(chroma_config.get("mode", "rgb"))
+    chroma_mode = args.chroma_mode if args.chroma_mode is not None else str(chroma_config.get("mode", extract.CHROMA_RGB))
     chroma_key = tuple(int(value) for value in request["chroma_key"]["rgb"])
     unmix_reach = (
         args.fringe_unmix_reach
@@ -100,10 +100,10 @@ def _strip_for_state(run_dir: Path, request: dict[str, Any], state: str, args: a
         if args.spill_max_fraction is not None
         else float(chroma_config.get("spill_max_fraction", 0.005))
     )
-    decontam = args.decontam if args.decontam is not None else str(chroma_config.get("decontam", "off"))
-    decontam_kwargs = {} if decontam == "off" else {"decontam": decontam}
+    decontam = args.decontam if args.decontam is not None else str(chroma_config.get("decontam", extract.OFF))
+    decontam_kwargs = {} if decontam == extract.OFF else {"decontam": decontam}
     with Image.open(raw_path) as opened:
-        if chroma_mode == "ycbcr":
+        if chroma_mode == extract.CHROMA_YCBCR:
             notes: list[str] = []
             return extract.remove_chroma_background_ycbcr(opened, chroma_key, notes, **decontam_kwargs)
         return extract.remove_chroma_background(

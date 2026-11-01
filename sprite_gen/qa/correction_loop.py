@@ -16,7 +16,7 @@ from typing import Any
 from sprite_gen.util.cli_kwargs import namespace_from_kwargs
 from sprite_gen.qa import inspect as inspect_mod
 from sprite_gen.qa import score as score_mod
-from sprite_gen.spec.runio import LOCK_FILENAME, atomic_write_text, refuse_overlap, relative_posix, same_folder
+from sprite_gen.spec.runio import LOCK_FILENAME, REQUEST_FILENAME, atomic_write_text, refuse_overlap, relative_posix, same_folder
 from sprite_gen.util.console import utf8_streams
 
 BEST_CANDIDATE = "best-candidate"
@@ -198,7 +198,7 @@ def run_loop(
         )
         if completed.returncode != 0:
             raise SystemExit(f"provider command failed with exit {completed.returncode}: {command}")
-        if not (next_run_dir / "sprite-request.json").is_file():
+        if not (next_run_dir / REQUEST_FILENAME).is_file():
             raise SystemExit(f"provider command did not create a sprite-gen run dir: {next_run_dir}")
         current = next_run_dir
 

@@ -135,12 +135,9 @@ from __future__ import annotations
 from typing import Any
 
 from sprite_gen._deps import np
-from sprite_gen.frames.extract import (_IN_BAND_UNMIX_KEY_DEPTH, _grow_chebyshev, _grow_into, _key_channel_split,
-                                       _key_excess_field)
+from sprite_gen.frames.extract import (_IN_BAND_UNMIX_KEY_DEPTH, DECONTAM_MODES, OFF, PALETTE, _grow_chebyshev,
+                                       _grow_into, _key_channel_split, _key_excess_field)
 
-# "palette" runs the pass and fails loud when it cannot; "auto" runs it wherever it applies (a
-# chroma key, a subject interior to learn from) and otherwise reports why it did not.
-DECONTAM_MODES = ("off", "auto", "palette")
 DECONTAM_FITS = ("still", "video")
 
 BAND_PX = 6  # subject pixels this close (Chebyshev) to the keyed background are re-examined
@@ -517,7 +514,7 @@ def palette_from_stats(stats: dict[str, Any]) -> dict[str, Any]:
 
 def decontaminate(source_rgb: np.ndarray, keyed: np.ndarray, keyed_mask: np.ndarray,
                   chroma_key: tuple[int, int, int], *, fit: str = "still", alpha_depth: int = 4,
-                  palette: dict[str, Any] | None = None, mode: str = "palette",
+                  palette: dict[str, Any] | None = None, mode: str = PALETTE,
                   source_alpha: np.ndarray | None = None, edge_band: int = 0,
                   history: dict[str, Any] | None = None) -> tuple[np.ndarray, dict[str, Any]]:
     """Re-explain the edge of an already keyed image. Returns (RGBA uint8, stats).
@@ -536,12 +533,12 @@ def decontaminate(source_rgb: np.ndarray, keyed: np.ndarray, keyed_mask: np.ndar
     pass does not apply; `mode="palette"` raises SystemExit there instead.
     """
     validate(mode, fit)
-    if mode == "off":
+    if mode == OFF:
         raise SystemExit("decontam: decontaminate() called with mode 'off'")
     if palette is None:
         reason = not_applicable(keyed, keyed_mask, chroma_key)
         if reason is not None:
-            if mode == "palette":
+            if mode == PALETTE:
                 raise SystemExit(f"decontam: {reason}; run without decontam")
             if history is not None:
                 history.clear()  # a frame left as keyed: the next one has no last frame to hold to

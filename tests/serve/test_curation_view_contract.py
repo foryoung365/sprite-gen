@@ -660,3 +660,100 @@ def test_autosave_preserves_pixel_perfect_the_view_does_not_author(tmp_path, fie
     assert after == before, (
         f"{field} 선언이 autosave 에 사라져 굽기 변종이 {before} -> {after} 로 바뀌었다\n"
         f"  저장된 사이드카: {saved}")
+
+
+# --- the reroll and in-between buttons: the providers they run, and the one a request without a provider runs ------
+
+BUTTONS = {"/api/reroll": {"state": "items"}, "/api/interpolate": {"state": "items", "from": 0, "to": 1}}
+
+
+def _post_json(port: int, path: str, body: dict) -> tuple[int, dict]:
+    import urllib.error
+
+    req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", data=json.dumps(body).encode(), method="POST")
+    try:
+        with urllib.request.urlopen(req) as answer:
+            return answer.status, json.loads(answer.read())
+    except urllib.error.HTTPError as exc:
+        return exc.code, json.loads(exc.read())
+
+
+@pytest.fixture
+def button_server(tmp_path, monkeypatch):
+    """A curator server on an imported run whose generating steps are stubs keeping (button, provider)."""
+    from sprite_gen.serve import serve_curation
+
+    run = _build_import(tmp_path, [], with_base=False)
+    asked = []
+    monkeypatch.setattr(serve_curation, "run_reroll",
+                        lambda run_dir, state, provider: asked.append(("/api/reroll", provider)) or {"ok": True})
+    monkeypatch.setattr(serve_curation, "run_interpolate",
+                        lambda run_dir, state, a, b, t, label, provider:
+                        asked.append(("/api/interpolate", provider)) or {"ok": True})
+    CurationHandler.run_dir = run
+    CurationHandler.lang = "en"
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), partial(CurationHandler))
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        yield srv.server_address[1], asked
+    finally:
+        srv.shutdown()
+
+
+@pytest.mark.parametrize("path", list(BUTTONS))
+def test_the_buttons_run_only_the_curator_providers(button_server, monkeypatch, path):
+    """Both buttons run the curator's providers (`serve_curation.CURATOR_PROVIDERS`, what the select offers) and
+    refuse any other, read when the request comes: a copy of the set in the handler would not follow it."""
+    from sprite_gen.gen.base import PROVIDER_CODEX, PROVIDER_GROK
+
+    port, asked = button_server
+    monkeypatch.setattr("sprite_gen.serve.serve_curation.CURATOR_PROVIDERS", (PROVIDER_GROK,))
+    assert _post_json(port, path, {**BUTTONS[path], "provider": PROVIDER_CODEX}) == (
+        400, {"error": f"unknown provider: {PROVIDER_CODEX}"})
+    assert _post_json(port, path, {**BUTTONS[path], "provider": PROVIDER_GROK})[0] == 200
+    assert asked == [(path, PROVIDER_GROK)]
+
+
+@pytest.mark.parametrize("path,default", [
+    ("/api/reroll", "sprite_gen.gen.HARD_DEFAULT_PROVIDER"),                 # a reroll is gen drawing the row again
+    ("/api/interpolate", "sprite_gen.effects.interpolate.DEFAULT_PROVIDER"),  # an in-between has its own default
+])
+def test_a_button_request_naming_no_provider_runs_the_declared_default(button_server, monkeypatch, path, default):
+    """A request with no provider runs its step's declared default, read when the request comes."""
+    from sprite_gen.gen.base import PROVIDER_GROK
+
+    port, asked = button_server
+    monkeypatch.setattr(default, PROVIDER_GROK)
+    assert _post_json(port, path, BUTTONS[path])[0] == 200
+    assert asked == [(path, PROVIDER_GROK)]
+
+
+# gen-trigger.js is a classic script: its select is built by `makeProviderSelect` from a top-level const, so node runs
+# the file with the two DOM calls it makes and prints the options' values.
+SELECT_HARNESS = r"""
+const fs = require("fs");
+const vm = require("vm");
+const element = () => ({ children: [], appendChild(child) { this.children.push(child); } });
+const sandbox = { document: { createElement: element }, console };
+sandbox.globalThis = sandbox;
+vm.createContext(sandbox);
+vm.runInContext(fs.readFileSync(process.argv[2], "utf8"), sandbox);
+console.log(JSON.stringify(sandbox.makeProviderSelect().children.map((option) => option.value)));
+"""
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node 가 없어 gen-trigger.js 를 실행할 수 없다")
+def test_the_provider_select_offers_the_curator_providers_in_order(tmp_path):
+    """The select both buttons share is the JS side of `CURATOR_PROVIDERS`: the same values in the same order, and
+    its first option, the one a button runs unless changed, is higgsfield (this fork's default)."""
+    from sprite_gen.gen.base import PROVIDER_HIGGSFIELD
+    from sprite_gen.serve import serve_curation
+
+    harness = tmp_path / "harness.cjs"
+    harness.write_text(SELECT_HARNESS, encoding="utf-8")
+    script = serve_curation.CURATOR_DIR / "src" / "gen-trigger.js"
+    proc = subprocess.run([shutil.which("node"), str(harness), str(script)], capture_output=True, encoding="utf-8")
+    assert proc.returncode == 0, proc.stderr
+    values = json.loads(proc.stdout)
+    assert values == list(serve_curation.CURATOR_PROVIDERS)
+    assert values[0] == PROVIDER_HIGGSFIELD
