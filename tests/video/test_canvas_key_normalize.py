@@ -224,3 +224,54 @@ def test_mixed_contact_names_both(tmp_path: Path) -> None:
     keyed = Image.open(tmp_path / "keyed.refused" / files[1].name)
     split = frames_mod.classify_edge_contact(raw, keyed, GREEN)
     assert split["subject"] > 0 and split["residual"] > 0
+
+
+# --- target_key rekeying & bottom_pad ---------------------------------------------
+
+
+def test_pad_canvas_rekeys_green_still_to_magenta_preserving_subject(tmp_path: Path) -> None:
+    still = Image.open(_still(tmp_path, DARK_GREEN, "rekey.png"))
+    out, rep = canvas_mod.pad_canvas(still, canvas_mod.profile_for("attack"), target_key="magenta")
+    assert rep["key"] == "magenta"
+    assert rep["key_rgb"] == list(MAGENTA)
+    assert rep["rekeyed_from"] == "green"
+    assert _corners(out) == [MAGENTA] * 4
+    ox, oy = rep["offset"]
+    inner = np.array(out)[oy:oy + SIZE[1], ox:ox + SIZE[0]]
+    x0, y0, x1, y1 = SUBJECT_BOX
+    subject = np.zeros(inner.shape[:2], dtype=bool)
+    subject[y0:y1, x0:x1] = True
+    assert (inner[subject] == SUBJECT).all(), "subject pixels stay byte-identical after rekeying"
+    assert (inner[~subject] == MAGENTA).all(), "background pixels become pure magenta"
+
+
+def test_pad_canvas_composites_transparent_rgba_onto_target_key() -> None:
+    rgba = Image.new("RGBA", SIZE, (0, 0, 0, 0))
+    x0, y0, x1, y1 = SUBJECT_BOX
+    for y in range(y0, y1):
+        for x in range(x0, x1):
+            rgba.putpixel((x, y), (*SUBJECT, 255))
+    out, rep = canvas_mod.pad_canvas(rgba, canvas_mod.profile_for("attack"), target_key="magenta")
+    assert rep["key"] == "magenta" and rep["rekeyed_from"] == "transparent"
+    assert _corners(out) == [MAGENTA] * 4
+    ox, oy = rep["offset"]
+    assert out.getpixel((ox + 50, oy + 80)) == SUBJECT
+    assert out.getpixel((ox + 5, oy + 5)) == MAGENTA
+
+
+def test_pad_canvas_bottom_pad_reserves_pure_key_margin_below_still(tmp_path: Path) -> None:
+    still = Image.open(_still(tmp_path, GREEN, "bpad.png"))
+    out, rep = canvas_mod.pad_canvas(still, canvas_mod.profile_for("attack"), target_key="magenta", bottom_pad=0.14)
+    w, h = out.size
+    ox, oy = rep["offset"]
+    bottom_px = h - (oy + SIZE[1])
+    assert rep["bottom_pad"] == 0.14
+    assert bottom_px == round(h * 0.14)
+    assert oy >= round(h * rep["headroom"]) - 1
+    # Bottom band is pure magenta
+    band = np.array(out)[oy + SIZE[1]:, :]
+    assert (band == MAGENTA).all()
+    with pytest.raises(SystemExit, match="--bottom-pad"):
+        canvas_mod.pad_canvas(still, canvas_mod.profile_for("attack"), bottom_pad=0.5)
+    with pytest.raises(SystemExit, match="--bottom-pad"):
+        canvas_mod.pad_canvas(still, canvas_mod.profile_for("attack"), fit="tight", bottom_pad=0.1)

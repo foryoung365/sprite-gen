@@ -45,6 +45,7 @@ from sprite_gen.video import align as align_mod
 from sprite_gen.video import body_plan as body_mod
 from sprite_gen.video.body_plan import Body
 from sprite_gen.video import rife as rife_mod
+from sprite_gen.video import retime as retime_mod
 from sprite_gen.video import effect, nonloop
 from sprite_gen.video import play as play_mod
 from sprite_gen.util.console import utf8_streams
@@ -70,6 +71,19 @@ PINNED_LOOP_STATES = frozenset({"idle", "attack"})
 # States filmed as a fast action (`ACTION_COMMON_TEXT`): crisp frames, what they hold kept inside
 # the frame, and no "evenly paced" line.
 ACTION_TEXT_STATES = frozenset({"attack"})
+# Bottom safe margin added on `magi_2` canvases so slight first-frame framing jitter does not clip feet.
+MAGI2_BOTTOM_PAD = 0.14
+
+
+def uses_magi2(*, pins: bool, end_frame: Path | None = None) -> bool:
+    """Whether an item will be filmed by Higgsfield `magi_2` under the current provider/model env."""
+    from sprite_gen.gen import higgsfield_video
+    if higgsfield_video.video_provider() != PROVIDER_HIGGSFIELD:
+        return False
+    env_model = (os.environ.get(higgsfield_video.MODEL_ENV) or "").strip()
+    if env_model:
+        return env_model in higgsfield_video.MAGI2_MODELS
+    return (pins or end_frame is not None) and higgsfield_video.PINNED_MODEL in higgsfield_video.MAGI2_MODELS
 
 
 def duration_for(state: str, requested: int | None) -> int:
@@ -736,12 +750,15 @@ def run_item(
     fill_held: str = "auto",
     out_fps: float | None = None,
     air_retime: str | None = None,
+    action_retime: str = retime_mod.ACTION_RETIME_DEFAULT,
     meters_per_px: float | None = None,
 ) -> dict[str, Any]:
     """One (direction, state) item, canvas to loop. `play` is the request's play mode for it (`play.MODES`; None, the
     state's preset) and `motion` the caller's own motion text in place of the state's sentence. `anchor` is the
     request's `--anchor`; None cuts the loop with the item's own (`anchor_for`)."""
     mode = play_mod.resolve(state, play, prog="video-set")
+    if action_retime not in retime_mod.ACTION_RETIME_MODES:
+        raise SystemExit(f"video-set: --action-retime must be one of {', '.join(retime_mod.ACTION_RETIME_MODES)}")
     if end_frame is not None and mode != play_mod.ONCE_HOLD:
         raise SystemExit("video-set: --end-frame requires a once-hold item (a non-loop state, or --play once-hold)")
     if mode == play_mod.ONCE_HOLD and (fit == "tight" or anchor not in (None, "none")):
@@ -825,7 +842,19 @@ def run_item(
                                                              vision=_facing_vision())
             # a lifetime is framed as an effect, whatever its name: on black, its centre kept. The view tells the
             # canvas whether a walk or run crosses the picture, whose still's room it reads (`canvas.gait_room`)
-            canvas_report = canvas_mod.run_canvas(still, canvas_png, state=effect.STATE if lifetime else state, shape=shape, facing=facing if direction not in ("front", "back") else "right", headroom=None, lead=None, report_path=canvas_report_path, fit=fit, view=direction)
+            from sprite_gen.gen import higgsfield_video
+            env_model = (os.environ.get(higgsfield_video.MODEL_ENV) or "").strip()
+            auto_magenta = (
+                not lifetime
+                and uses_magi2(pins=pins, end_frame=end_frame)
+                and (video_runner is run_video_cli or env_model in higgsfield_video.MAGI2_MODELS)
+            )
+            canvas_extra: dict[str, Any] = {}
+            if auto_magenta:
+                canvas_extra["target_key"] = "magenta"
+                if fit == "state":
+                    canvas_extra["bottom_pad"] = MAGI2_BOTTOM_PAD
+            canvas_report = canvas_mod.run_canvas(still, canvas_png, state=effect.STATE if lifetime else state, shape=shape, facing=facing if direction not in ("front", "back") else "right", headroom=None, lead=None, report_path=canvas_report_path, fit=fit, view=direction, **canvas_extra)
             if facing_report is not None:
                 canvas_report["facing_check"] = facing_report
                 atomic_write_text(canvas_report_path, json.dumps(canvas_report, ensure_ascii=False, indent=2) + "\n")
@@ -869,7 +898,12 @@ def run_item(
         # a tight frame is clipped on purpose; leftover key background still fails. `decontam` is passed
         # whatever its value: run_frames defaults to auto, so leaving it out would not mean off
         extra = {"alpha_mode": "brightness"} if lifetime else {}
-        fr = frames_mod.run_frames(clip, item_dir / "frames", key=key, allow_edge_contact=False, report_path=item_dir / "frames.report.json", spill=spill, reference=canvas_png, allow_subject_edge_contact=fit == "tight", decontam=decontam, **extra)
+        frames_key = (
+            str(canvas_report["key"])
+            if (not lifetime and canvas_report.get("key") in canvas_mod.TARGET_KEYS)
+            else key
+        )
+        fr = frames_mod.run_frames(clip, item_dir / "frames", key=frames_key, allow_edge_contact=False, report_path=item_dir / "frames.report.json", spill=spill, reference=canvas_png, allow_subject_edge_contact=fit == "tight", decontam=decontam, **extra)
         result["frames"] = {k: fr[k] for k in ("fps", "frames", "alpha_zero_pct_min", "alpha_zero_pct_max")}
         result["frames"]["spill"] = fr.get("spill", {}).get("mode")
         decontam_note = frames_mod.decontam_warning(fr.get("decontam") or {})
@@ -880,7 +914,7 @@ def run_item(
         lp = loop_mod.run_loop(Path(fr["keyed_dir"]), item_dir / "loop", fps=float(fr["fps"]), state=state, min_len=None, max_len=None, n_out=None, seam_max=loop_mod.SEAM_RATIO_MAX, name=item, report_path=item_dir / "loop.report.json", anchor=anchor_for(state, cut, anchor), body_height=body_height,
                                cycle_mode=cut,
                                facing=facing if direction in handed_mod.LATERAL_VIEWS else "right", view=direction,
-                               fill_held=fill_held, out_fps=out_fps, air_retime=air_retime, meters_per_px=meters_per_px)
+                               fill_held=fill_held, out_fps=out_fps, air_retime=air_retime, action_retime=action_retime, meters_per_px=meters_per_px)
         result["loop"] = {"kind": lp["cycle"].get("kind", "periodic"), "cycle": lp["cycle"]["length"], "period": lp["cycle"]["period_global"], "cycle_ratio": round(lp["cycle"]["ratio"], 3), "seam_ratio": lp["resampled_seam_ratio"], "n_out": lp["n_out"], "drift_px": lp["strip"].get("drift_px", 0), "gif": lp["gif"]["file"], "webp": lp["webp"]["file"], "strip": lp["strip"]["path"]}
         result["loop"]["review_recommended"] = lp["cycle"].get("review_recommended", False)
         result["loop"]["half_period_guard"] = lp["cycle"].get("half_period_guard")
@@ -920,6 +954,10 @@ def run_item(
         if "air_retime" in lp:
             result["loop"]["air_retime"] = {k: lp["air_retime"][k] for k in ("applied", "why", "made", "shown_again", "poses", "cells")
                                             if k in lp["air_retime"]}
+        if "action_retime" in lp:
+            result["loop"]["action_retime"] = {k: lp["action_retime"][k]
+                                               for k in ("mode", "applied", "why", "frames_before", "frames_after", "duration_before", "duration_after", "dead_hold_trimmed_s")
+                                               if k in lp["action_retime"]}
         if "rife" in (lp.get("jump_repair") or {}):
             # cut as filmed for want of RIFE: the set report lists it under `warnings` (a wrap the seam bridge read carries
             # its `seam`, not the flow's `off_max_before`)
@@ -1187,6 +1225,7 @@ def run_set(
     fill_held: str = "auto",
     out_fps: float | None = None,
     air_retime: str | None = None,
+    action_retime: str = retime_mod.ACTION_RETIME_DEFAULT,
     meters_per_px: float | None = None,
 ) -> dict[str, Any]:
     """`bases` maps a view to its still; `facing` is right, left or `right,left` (`facings_of`), and a view filmed
@@ -1199,6 +1238,8 @@ def run_set(
     filmed under its name in that mode, a named state without one plays as its preset."""
     if align_cycles not in ALIGN_MODES:
         raise SystemExit(f"video-set: --align-cycles must be one of {', '.join(ALIGN_MODES)}")
+    if action_retime not in retime_mod.ACTION_RETIME_MODES:
+        raise SystemExit(f"video-set: --action-retime must be one of {', '.join(retime_mod.ACTION_RETIME_MODES)}")
     if anchor == "motion-auto" and any(not loop_mod.profile_for(state).gait for state in states):
         raise SystemExit("video-set: --anchor motion-auto requires walk/run states")
     if anchor == "motion":
@@ -1261,7 +1302,7 @@ def run_set(
         return prepare_side
 
     with ThreadPoolExecutor(max_workers=max(1, concurrency)) as ex:
-        futures = {ex.submit(run_item, item=i, direction=d, state=s, base=b, root=root, character=character, duration=duration, resolution=resolution, key=key, force=force, gap=gap, video_runner=video_runner, shape=shape, anchor=anchor, spill=spill, facing=f, facing_fix=facing_fix, prepare_side=side_preparer(f), body_height=body_height, fit=fit, decontam=decontam, walk_start=walk_start, redraw_runner=redraw_runner, still_provider=still_provider, handed=handed, body_plan=body_plan, **({"end_frame": end_frames[i]} if end_frames and i in end_frames else {}), **({"play": plays[i]} if i in plays else {}), **({"motion": motions[i]} if i in motions else {}), fill_held=fill_held, out_fps=out_fps, air_retime=air_retime, meters_per_px=meters_per_px): i for i, d, s, f, b in items}
+        futures = {ex.submit(run_item, item=i, direction=d, state=s, base=b, root=root, character=character, duration=duration, resolution=resolution, key=key, force=force, gap=gap, video_runner=video_runner, shape=shape, anchor=anchor, spill=spill, facing=f, facing_fix=facing_fix, prepare_side=side_preparer(f), body_height=body_height, fit=fit, decontam=decontam, walk_start=walk_start, redraw_runner=redraw_runner, still_provider=still_provider, handed=handed, body_plan=body_plan, **({"end_frame": end_frames[i]} if end_frames and i in end_frames else {}), **({"play": plays[i]} if i in plays else {}), **({"motion": motions[i]} if i in motions else {}), fill_held=fill_held, out_fps=out_fps, air_retime=air_retime, action_retime=action_retime, meters_per_px=meters_per_px): i for i, d, s, f, b in items}
         for fut in as_completed(futures):
             r = fut.result()
             results.append(r)
@@ -1424,6 +1465,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--air-retime", default=None, metavar="gravity=G,air=T,speed=V",
                         help="each cut played once with an air in it: that air given a length, a gravity and a speed of its own "
                              "(video-loop --air-retime); each item's `loop.air` says each air's seconds and apex")
+    parser.add_argument("--action-retime", choices=retime_mod.ACTION_RETIME_MODES, default=retime_mod.ACTION_RETIME_DEFAULT,
+                        help="compact long dead holds and idle padding in attack clips (video-loop --action-retime): "
+                             "auto (default), punch, or off")
     parser.add_argument("--meters-per-px", type=float, default=None,
                         help="the metres a pixel of the clips as filmed holds (video-loop --meters-per-px): the root motion in "
                              "metres, and --air-retime's gravity and speed")
@@ -1454,7 +1498,8 @@ def run(**kwargs: object) -> int:
         play=_parse_keyed(list(kwargs.get("play") or []), "--play") or None,  # type: ignore[arg-type]
         motion=_parse_keyed(list(kwargs.get("motion") or []), "--motion") or None,  # type: ignore[arg-type]
         fill_held=str(kwargs.get("fill_held") or "auto"), out_fps=kwargs.get("out_fps"),  # type: ignore[arg-type]
-        air_retime=kwargs.get("air_retime"), meters_per_px=kwargs.get("meters_per_px"),  # type: ignore[arg-type]
+        air_retime=kwargs.get("air_retime"), action_retime=str(kwargs.get("action_retime") or retime_mod.ACTION_RETIME_DEFAULT),
+        meters_per_px=kwargs.get("meters_per_px"),  # type: ignore[arg-type]
     )
     return 0 if not payload["failed"] else 1
 

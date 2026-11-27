@@ -79,6 +79,7 @@ from sprite_gen.frames.extract import _SPILL_FULL_MIN_TINT, DEFAULT_UNMIX_REACH
 from sprite_gen.frames.extract import BORDER_MIN_FRACTION, FRAME_SIDES, own_border
 from sprite_gen.spec.runio import atomic_write_text, new_stage, refuse_overlap
 from sprite_gen.util.console import utf8_streams
+from sprite_gen.video import framing_guard as framing_guard_mod
 from sprite_gen.video import prop_plate as plate_mod
 
 EDGE_ROWS = 4  # rows/cols inspected at each edge
@@ -699,7 +700,7 @@ def _edge_contact_message(contacts: list[dict[str, Any]]) -> str:
     return message
 
 
-def run_frames(clip: Path, out_dir: Path, *, key: str, allow_edge_contact: bool, report_path: Path | None, spill: str = "small", reference: Path | None = None, allow_subject_edge_contact: bool = False, decontam: str = DECONTAM_DEFAULT, source_manifest: Path | None = None, alpha_mode: str = "chroma", prop_plate: Path | None = None) -> dict[str, Any]:
+def run_frames(clip: Path, out_dir: Path, *, key: str, allow_edge_contact: bool, report_path: Path | None, spill: str = "small", reference: Path | None = None, allow_subject_edge_contact: bool = False, decontam: str = DECONTAM_DEFAULT, source_manifest: Path | None = None, alpha_mode: str = "chroma", prop_plate: Path | None = None, check_framing: bool = True) -> dict[str, Any]:
     from . import effect
     if alpha_mode not in effect.ALPHA_MODES:
         raise SystemExit(f"video-frames: unknown --alpha-mode {alpha_mode!r}")
@@ -736,15 +737,30 @@ def run_frames(clip: Path, out_dir: Path, *, key: str, allow_edge_contact: bool,
                 decide_spill(Path(reference).expanduser().resolve(), key) if spill == "auto" else {"mode": spill, "reason": "explicit"})
     files = extract(clip, raw_dir, meta["stream_index"])
     head = {"kind": REPORT_KIND, "clip": str(clip), "out_dir": str(out_dir), "raw_dir": str(raw_dir)}
+    framing_guard: dict[str, Any] | None = None
+    if check_framing and alpha_mode == "chroma" and reference is not None and not allow_edge_contact and not allow_subject_edge_contact:
+        with Image.open(Path(reference).expanduser().resolve()) as ref_im, Image.open(files[0]) as f0_im:
+            framing_guard = framing_guard_mod.compare_subject_framing(ref_im, f0_im, key=key)
+        if framing_guard.get("checked") and not framing_guard.get("passed"):
+            error = (
+                f"video-frames: first frame was reframed by the video model ({framing_guard.get('reason')}; "
+                f"scale_ratio={framing_guard.get('scale_ratio')}) — regenerate the clip or pass --allow-reframe to skip this check"
+            )
+            payload = {**head, "status": "refused", "error": error, "keyed_dir": None, "refused_dir": None,
+                       "key": key, "spill": decision, "framing_guard": framing_guard, **meta}
+            atomic_write_text(target, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+            raise SystemExit(error)
     try:
         report = key_frames(files, keyed_dir, key=key, check_edges=not allow_edge_contact, spill=decision["mode"], allow_subject=allow_subject_edge_contact, decontam=decontam, alpha_mode=alpha_mode, plate=plate)
     except KeyingRefused as refused:
         # The run's record, written whatever it found: the frames it keyed are in `refused_dir`, and nothing is handed over.
         payload = {**head, "status": "refused", "error": str(refused), "keyed_dir": None, "refused_dir": str(refused_dir(keyed_dir)),
-                   "key": key, "spill": decision, **meta, **refused.report}
+                   "key": key, "spill": decision, **({"framing_guard": framing_guard} if framing_guard is not None else {}),
+                   **meta, **refused.report}
         atomic_write_text(target, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
         raise
-    payload = {**head, "status": "passed", "keyed_dir": str(keyed_dir), "key": key, "spill": decision, **meta, **report}
+    payload = {**head, "status": "passed", "keyed_dir": str(keyed_dir), "key": key, "spill": decision,
+               **({"framing_guard": framing_guard} if framing_guard is not None else {}), **meta, **report}
     if source_manifest is not None:
         from sprite_gen.video.evidence import engine_identity
         payload["producer"] = engine_identity()
@@ -768,6 +784,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--key", choices=("auto", "green", "magenta", "white"), default="auto", help="background key (auto reads the corners)")
     parser.add_argument("--allow-edge-contact", action="store_true", help="accept any opaque pixel at the top/left/right edge (subject and leftover key background alike)")
     parser.add_argument("--allow-subject-edge-contact", action="store_true", help="accept the subject touching the top/left/right edge (a `video-canvas --fit tight` clip) but still refuse leftover key background there")
+    parser.add_argument("--allow-reframe", action="store_true", help="skip the first-frame scale/framing check against --reference (accept a clip whose first frame was zoomed or cropped by the video model)")
     parser.add_argument("--report", type=Path, help="report JSON (default <out-dir>/frames.report.json)")
     parser.add_argument("--source-manifest", type=Path, help="write exact clip/canvas/keyed-file digests and source timestamps (requires --reference)")
     parser.add_argument("--spill", choices=SPILL_MODES, default="small", help="small: correct only small key-tinted clusters (default); full: every key tint in the subject is spill; auto: decide from --reference")
@@ -782,8 +799,9 @@ def run(**kwargs: object) -> int:
                          spill=str(kwargs.get("spill") or "small"), reference=kwargs.get("reference"),  # type: ignore[arg-type]
                          allow_subject_edge_contact=bool(kwargs.get("allow_subject_edge_contact")),
                          decontam=str(kwargs.get("decontam") or DECONTAM_DEFAULT), source_manifest=kwargs.get("source_manifest"),
-                         alpha_mode=str(kwargs.get("alpha_mode") or "chroma"), prop_plate=kwargs.get("prop_plate"))  # type: ignore[arg-type]
-    summary = {k: payload[k] for k in ("clip", "keyed_dir", "width", "height", "fps", "frames", "codec", "pix_fmt", "audio_streams", "alpha_zero_pct_min", "alpha_zero_pct_max", "edge_contacts", "edge_policy", "spill", "report") + (("prop_plate",) if "prop_plate" in payload else ())}
+                         alpha_mode=str(kwargs.get("alpha_mode") or "chroma"), prop_plate=kwargs.get("prop_plate"),
+                         check_framing=not bool(kwargs.get("allow_reframe")))  # type: ignore[arg-type]
+    summary = {k: payload[k] for k in ("clip", "keyed_dir", "width", "height", "fps", "frames", "codec", "pix_fmt", "audio_streams", "alpha_zero_pct_min", "alpha_zero_pct_max", "edge_contacts", "edge_policy", "spill", "report") + (("prop_plate",) if "prop_plate" in payload else ()) + (("framing_guard",) if "framing_guard" in payload else ())}
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     line = decontam_warning(payload["decontam"])
     if line:

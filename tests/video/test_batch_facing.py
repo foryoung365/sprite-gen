@@ -128,3 +128,81 @@ def test_tool_defaults_to_record_only(monkeypatch, tmp_path):
     monkeypatch.setattr(batch, "run_set", run_set)
     assert batch.run(base=[f"side={FIXTURE}"], out_dir=tmp_path) == 0
     assert seen[0]["facing_fix"] == "none"
+
+
+def test_magi2_batch_auto_routes_magenta_canvas_bottom_pad_and_frames_key(tmp_path, monkeypatch):
+    """Pinned Higgsfield items routed to magi_2 automatically rekey canvas to magenta with bottom_pad=0.14
+    and pass key='magenta' to video-frames, while threading --action-retime to video-loop."""
+    from PIL import Image, ImageDraw
+    from sprite_gen.gen import higgsfield_video
+
+    monkeypatch.delenv(higgsfield_video.PROVIDER_ENV, raising=False)
+    monkeypatch.setenv(higgsfield_video.MODEL_ENV, "magi_2")
+    monkeypatch.setattr(batch, "_facing_vision", lambda: None)
+    monkeypatch.setattr(batch.facing_mod.vision, "grok_inspect", lambda *a, **kw: ("left", {}))
+    monkeypatch.setattr(batch, "_staggered_start", lambda gap: None)
+
+    green_still = tmp_path / "green_side.png"
+    im = Image.new("RGB", (120, 160), (0, 255, 0))
+    ImageDraw.Draw(im).rectangle((36, 32, 84, 150), fill=(180, 60, 45))
+    im.save(green_still)
+
+    seen_frames: list[dict] = []
+    seen_loop: list[dict] = []
+
+    def fake_frames(clip, out, **kw):
+        seen_frames.append(kw)
+        return {"fps": 25.0, "frames": 106, "alpha_zero_pct_min": 80.0, "alpha_zero_pct_max": 90.0, "keyed_dir": str(out)}
+
+    def fake_loop(frames_dir, out, **kw):
+        seen_loop.append(kw)
+        return {
+            "cycle": {"kind": "pinned", "length": 105, "period_global": None, "ratio": 0.1},
+            "resampled_seam_ratio": 0.1,
+            "held_fill": {"cells": 24, "poses": 24, "held_runs": [], "made": [], "before": {"cells": 24, "poses": 24, "held_runs": []}},
+            "action_retime": {"mode": kw["action_retime"], "applied": True, "why": "trimmed", "frames_before": 105, "frames_after": 24,
+                              "duration_before": 4.2, "duration_after": 0.96, "dead_hold_trimmed_s": 1.6},
+            "n_out": 24, "gif": {"file": "loop.gif"}, "webp": {"file": "loop.webp"}, "strip": {"path": "strip.png"},
+        }
+
+    def fake_video(image, prompt, out, report, **kw):
+        out.write_bytes(b"test-video")
+        report.write_text(json.dumps({"prompt": prompt}))
+        return 0
+
+    monkeypatch.setattr(batch.frames_mod, "run_frames", fake_frames)
+    monkeypatch.setattr(batch.loop_mod, "run_loop", fake_loop)
+
+    res = batch.run_set(
+        bases={"side": green_still}, states=["attack"], root=tmp_path / "set", character=None, duration=None,
+        resolution="720p", key="green", concurrency=1, force=False, gap=0.0, facing="left",
+        video_runner=fake_video, action_retime="punch",
+    )
+    assert res["ok"] == 1
+    canvas_rep = json.loads((tmp_path / "set" / "side-attack" / "canvas.report.json").read_text())
+    assert canvas_rep["key"] == "magenta"
+    assert canvas_rep["rekeyed_from"] == "green"
+    assert canvas_rep["bottom_pad"] == batch.MAGI2_BOTTOM_PAD
+    assert seen_frames[0]["key"] == "magenta"
+    assert seen_loop[0]["action_retime"] == "punch"
+    assert res["items"][0]["loop"]["action_retime"]["applied"] is True
+    assert res["items"][0]["loop"]["action_retime"]["mode"] == "punch"
+
+
+def test_uses_magi2_respects_provider_and_model_env(monkeypatch):
+    from sprite_gen.gen import higgsfield_video
+
+    monkeypatch.delenv(higgsfield_video.PROVIDER_ENV, raising=False)
+    monkeypatch.delenv(higgsfield_video.MODEL_ENV, raising=False)
+    assert batch.uses_magi2(pins=True) is True
+    assert batch.uses_magi2(pins=False) is False
+    assert batch.uses_magi2(pins=False, end_frame=Path("end.png")) is True
+
+    monkeypatch.setenv(higgsfield_video.MODEL_ENV, "wan3_0")
+    assert batch.uses_magi2(pins=True) is False
+
+    monkeypatch.setenv(higgsfield_video.MODEL_ENV, "magi_2")
+    assert batch.uses_magi2(pins=False) is True
+
+    monkeypatch.setenv(higgsfield_video.PROVIDER_ENV, "grok")
+    assert batch.uses_magi2(pins=True) is False

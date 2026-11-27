@@ -65,6 +65,7 @@ from sprite_gen.video.interpolation_quality import ghost_screen
 from sprite_gen.video import evidence as evidence_mod
 from sprite_gen.video.frames import drop_specks
 from sprite_gen.util.console import utf8_streams
+from sprite_gen.video import retime as retime_mod
 from sprite_gen.video import wrap_blend as wrap_blend_mod
 
 ANALYSIS_SIZE = 96  # thumbnail edge for the distance matrix
@@ -2422,6 +2423,7 @@ def _cut_loop(
     fill_held: str = "auto",
     out_fps: float | None = None,
     air_retime: str | None = None,
+    action_retime: str = retime_mod.ACTION_RETIME_DEFAULT,
     meters_per_px: float | None = None,
     contacts: list[str] | None = None,
 ) -> dict[str, Any]:
@@ -2469,6 +2471,8 @@ def _cut_loop(
         raise SystemExit(f"video-loop: unknown --body-turn {body_turn!r}; expected one of {', '.join(body_turn_mod.MODES)}")
     if fill_held not in held_fill_mod.MODES:
         raise SystemExit(f"video-loop: unknown --fill-held {fill_held!r}; expected one of {', '.join(held_fill_mod.MODES)}")
+    if action_retime not in retime_mod.ACTION_RETIME_MODES:
+        raise SystemExit(f"video-loop: unknown --action-retime {action_retime!r}; expected one of {', '.join(retime_mod.ACTION_RETIME_MODES)}")
     if out_fps is not None:
         if not (math.isfinite(out_fps) and out_fps > fps):
             raise SystemExit(f"video-loop: --out-fps {out_fps:g} is not above the clip's {fps:g} fps: a cut is given at a higher "
@@ -2768,6 +2772,7 @@ def _cut_loop(
         report_base["clip_feet"] = cadence_mod.clip_feet(gait_frames[skip:], L, first=skip)
     # playback density, not a fixed count: a long cycle gets more frames so every state plays at
     # ~gif_fps (a fixed 12 made a 2.5 s jump hold each frame 210 ms while a 1.1 s walk held 90 ms)
+    n_out_explicit = n_out is not None
     if n_out is None:
         n_out = max(GIF_FRAMES_MIN, round(L / fps * gif_fps))
     n_asked = n_out
@@ -3034,6 +3039,21 @@ def _cut_loop(
     upsampled = None
     # A cut played once carries its root motion (docs/video-pipeline.md, "Root motion"), read against the clip's floor.
     floor = root_motion_mod.clip_floor(files) if cycle["kind"] in root_motion_mod.KINDS else None
+    action_retimed = None
+    frames, report_base["action_retime"] = retime_mod.retime_action(
+        frames, fps=fps, state=state or "", cycle_mode=cycle["kind"], mode=action_retime
+    )
+    if report_base["action_retime"]["applied"]:
+        src_indices = report_base["action_retime"]["source_indices"]
+        action_retimed = {"times": [float(k) for k in src_indices], "source_frames": list(src_indices)}
+        upsampled = action_retimed["times"]
+        report_base["seam_measurement"] = "rendered-cells"
+        as_filmed = {}
+        cycle_seconds = len(frames) / fps
+        if n_out_explicit:
+            n_out = min(n_asked, len(frames))
+        else:
+            n_out = min(len(frames), max(GIF_FRAMES_MIN, round(cycle_seconds * gif_fps)))
     retimed = None
     if asked_air is not None:
         if cycle["kind"] not in root_motion_mod.KINDS:
@@ -3076,6 +3096,15 @@ def _cut_loop(
         for line in _out_fps_lines(held_record["out_fps"]):
             print(f"video-loop: warning: {name}: {line}", file=sys.stderr)
         if held_record["out_fps"]["applied"]:
+            if action_retimed is not None:
+                held_record["out_fps"]["source_frames"] = [
+                    action_retimed["source_frames"][sf] if sf is not None else None
+                    for sf in held_record["out_fps"]["source_frames"]
+                ]
+                held_record["out_fps"]["times"] = [
+                    action_retimed["times"][min(len(action_retimed["times"]) - 1, math.floor(t))]
+                    for t in held_record["out_fps"]["times"]
+                ]
             upsampled = held_record["out_fps"]["times"]
             report_base["seam_measurement"] = "rendered-cells"
             as_filmed = {}  # the cells are each made at a time of their own: read as they play
@@ -3125,6 +3154,12 @@ def _cut_loop(
         # The air given its own length, or why it was not: a retimed cut's cells are times of their own, and the air's
         # are moved onto its parabola.
         strip_meta["air_retime"] = root_motion_mod.public(report_base["air_retime"])
+    if report_base.get("action_retime", {}).get("applied"):
+        strip_meta["action_retime"] = {
+            k: report_base["action_retime"][k]
+            for k in ("mode", "applied", "frames_before", "frames_after", "duration_before", "duration_after", "dead_hold_trimmed_s")
+            if k in report_base["action_retime"]
+        }
     if cycle["kind"] in nonloop.KINDS:
         strip_meta.update(nonloop.metadata(cycle, strip_meta["sample_indices"] if upsampled is None else
                                            [upsampled[k] for k in strip_meta["sample_indices"]]))
@@ -3184,10 +3219,14 @@ def _cut_loop(
     n_out = min(n_out, int(strip_meta["frames"]))
     strip_path = out_dir / f"{name}.strip.png"
     strip.save(strip_path)
+    cell_upsampled = (None if upsampled is None else
+                      retimed if retimed is not None else
+                      held_record["out_fps"] if "out_fps" in held_record else
+                      action_retimed)
     cell_record = _cell_record(strip_path.read_bytes(), [frames[k] for k in strip_meta["sample_indices"]], start=i,
                                length=L, samples=strip_meta["sample_indices"], anchored=anchored, wrap_dx=wrap_dx,
                                motion=motion, scales=clip_scales,
-                               upsampled=None if upsampled is None else retimed if retimed is not None else held_record["out_fps"])
+                               upsampled=cell_upsampled)
     # The record of its cells is the strip's own: written beside it, not into the report.
     atomic_write_text(out_dir / f"{name}.strip.json", json.dumps({**strip_meta, CELL_RECORD: cell_record}, indent=2) + "\n")
 
@@ -3476,6 +3515,10 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                              "filmed, the landing moved along. G and V need --meters-per-px. The strip metadata says "
                              "`air_retime`; with no RIFE installed the air is cut as filmed, with a warning "
                              "(docs/video-pipeline.md, \"Root motion\")")
+    parser.add_argument("--action-retime", choices=retime_mod.ACTION_RETIME_MODES, default=retime_mod.ACTION_RETIME_DEFAULT,
+                        help="compact long dead holds and excess idle padding in attack clips: auto (default, triggers on "
+                             ">=3.2 s attack clips with a dead hold or long idle), punch (always compact detected attacks), "
+                             "or off (keep as filmed)")
     parser.add_argument("--meters-per-px", type=float, default=None,
                         help="the metres a pixel of the clip as filmed holds (the standing height in metres over the strip's "
                              "`body_src_h`): the root motion in metres too (`root_m`, each apex's `apex_m`), and --air-retime's "
@@ -3508,7 +3551,8 @@ def run(**kwargs: object) -> int:
         view=kwargs.get("view"),  # type: ignore[arg-type]
         body_turn=str(kwargs.get("body_turn") or "warn"),
         fill_held=str(kwargs.get("fill_held") or "auto"), out_fps=kwargs.get("out_fps"),  # type: ignore[arg-type]
-        air_retime=kwargs.get("air_retime"), meters_per_px=kwargs.get("meters_per_px"),  # type: ignore[arg-type]
+        air_retime=kwargs.get("air_retime"), action_retime=str(kwargs.get("action_retime") or retime_mod.ACTION_RETIME_DEFAULT),
+        meters_per_px=kwargs.get("meters_per_px"),  # type: ignore[arg-type]
         contacts=kwargs.get("contact"),  # type: ignore[arg-type]
     )
     summary = {k: payload[k] for k in ("state", "frames_total", "window", "cycle_seconds", "n_out", "delay_ms", "resampled_seam_ratio", "specks_dropped", "report")}
@@ -3591,6 +3635,10 @@ def run(**kwargs: object) -> int:
     if "air_retime" in payload:
         summary["air_retime"] = {k: payload["air_retime"][k] for k in ("applied", "why", "made", "shown_again", "cells", "poses")
                                  if k in payload["air_retime"]}
+    if "action_retime" in payload:
+        summary["action_retime"] = {k: payload["action_retime"][k]
+                                    for k in ("mode", "applied", "why", "frames_before", "frames_after", "duration_before", "duration_after", "dead_hold_trimmed_s")
+                                    if k in payload["action_retime"]}
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0
 

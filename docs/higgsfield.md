@@ -7,7 +7,7 @@ each by name only.
 | Verb | Higgsfield job | Other providers |
 |---|---|---|
 | `gen`, `gen-set`, `logo`, reroll and in-betweens in curation | `gpt_image_2_5` (any image job type with `--model`) | `--provider codex\|grok\|openai` |
-| `video`, `video-set`, `video-resume` | `grok_video_v15` for a still alone; `wan3_0` with `--last-frame`; `seedance_2_0` with `--reference` | `--provider grok`, or `SPRITE_GEN_VIDEO_PROVIDER=grok` |
+| `video`, `video-set`, `video-resume` | `grok_video_v15` for a still alone; `magi_2` with `--last-frame` (1080p, >=4 s, auto aspect match, framing guard); `seedance_2_0` with `--reference` | `--provider grok`, or `SPRITE_GEN_VIDEO_PROVIDER=grok`; `--model wan3_0` or `SPRITE_GEN_HIGGSFIELD_VIDEO_MODEL=wan3_0` for Wan 3.0 |
 | `sound` | `mirelo_text_to_audio` (sfx), `sonilo_music` (bgm) | `SPRITE_GEN_SOUND_PROVIDER=elevenlabs` |
 | facing checks, a logo's text read | none: Higgsfield has no vision model, so these run on the Claude subscription (`claude` signed in) | the provider's own check |
 
@@ -65,12 +65,25 @@ Prices measured 2026-10-30, at 1k: `low` 0.25, `medium` 0.5, `high` 1.5 credits;
 `SPRITE_GEN_VIDEO_PROVIDER` decides, and without that, Higgsfield.
 
 - A still alone becomes `grok_video_v15`, the same Grok Imagine Video 1.5 model the clip prompts were tuned on.
-- A clip pinned to a last frame (idles, and diagonal walks and runs, in `video-set`) becomes `wan3_0`, with
-  `aspect_ratio=auto` (the still's own ratio) and no generated audio unless `--audio`. `seedance_2_0` also takes
-  both frames but refuses clips under 4 seconds, and `video-set` films a pinned idle in 3.
+- A clip pinned to a last frame (idles, attacks, and diagonal walks and runs in `video-set`) defaults to `magi_2`,
+  normalized automatically to `1080p`, duration `>= 4` s, `generate_audio=false` (unless `--audio`), and an explicit
+  `aspect_ratio` matched to the input still (`21:9`, `16:9`, `4:3`, `1:1`, `3:4`, `9:16`; fallback `16:9`).
+  - **Magenta canvas routing (`video-set`)**: pinned `magi_2` items automatically rekey the canvas to `#FF00FF` magenta
+    (`video-canvas --target-key magenta --bottom-pad 0.14`) and pass `key=magenta` to `video-frames`, avoiding green-screen
+    grey-bar degradation and giving foot headroom against slight framing drift.
+  - **First-frame framing guard (`video` & `video-frames`)**: after download (`extra.framing_guard`) and before expensive
+    full-clip keying (`video-frames`), frame 0 is compared against the reference canvas; abnormal zoom/crop drift
+    (e.g. >15% height change or new bottom clipping) is warned in `video` and refused early in `video-frames`
+    (`--allow-reframe` skips the gate).
+  - **Attack hold compaction (`video-loop` / `video-set`)**: `--action-retime auto` (default) trims dead mid-action holds
+    and excess idle padding on `>= 3.2` s pinned/one-shot attack clips into a crisp ~0.8–1.1 s loop (`punch` always compacts;
+    `off` keeps the clip as filmed).
+  - To switch back to Wan 3.0 for pinned clips, pass `--model wan3_0` on `sprite-gen video` or set
+    `SPRITE_GEN_HIGGSFIELD_VIDEO_MODEL=wan3_0` for `video-set` (`wan3_0` keeps `aspect_ratio=auto`, `generate_audio=false`,
+    and 2–30 s duration at 480p/720p/1080p).
 - A clip guided by reference images becomes `seedance_2_0`, which takes them beside a start and an end image.
 - `SPRITE_GEN_HIGGSFIELD_VIDEO_MODEL=<job_type>` films every clip on one job, which is how `video-set` (it passes
-  no model) is moved to another, e.g. `kling4_0`. Kling 4.0 takes both frames at 720p or 1080p and is sent
+  no model) is moved to another, e.g. `wan3_0` or `kling4_0`. Kling 4.0 takes both frames at 720p or 1080p and is sent
   `mode=image-to-video` (or `reference-to-video` with references). One measured idle (2026-10-30, a pixel-art
   knight, 3 s at 720p): `wan3_0` kept the still closely with a small breath and a blink, seam 0.70;
   `kling4_0` moved more (the shield sways, the head dips), seam 1.00, at about twice the credits.

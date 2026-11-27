@@ -207,21 +207,61 @@ class _Clip:
         self.model = kw.get("model", "grok-imagine-video-1.5")
         self.last_frame = kw.get("last_frame")
         self.reference_images = kw.get("reference_images", [])
-        self.prompt, self.duration, self.resolution = "walk", 3, "720p"
-        self.aspect_ratio, self.generate_audio = None, False
+        self.prompt = kw.get("prompt", "walk")
+        self.duration = kw.get("duration", 3)
+        self.resolution = kw.get("resolution", "720p")
+        self.aspect_ratio = kw.get("aspect_ratio")
+        self.generate_audio = kw.get("generate_audio", False)
 
 
-@pytest.mark.parametrize("kw, model", [({}, "grok_video_v15"), ({"last_frame": "end.png"}, "wan3_0"),
+@pytest.mark.parametrize("kw, model", [({}, "grok_video_v15"), ({"last_frame": "end.png"}, "magi_2"),
                                        ({"reference_images": ["a.png"]}, "seedance_2_0"),
+                                       ({"model": "wan3_0", "last_frame": "end.png"}, "wan3_0"),
                                        ({"model": "minimax_h3"}, "minimax_h3")])
-def test_video_model_follows_what_the_clip_pins(tmp_path, kw, model):
+def test_video_model_follows_what_the_clip_pins(tmp_path, kw, model, monkeypatch):
+    monkeypatch.delenv(higgsfield_video.MODEL_ENV, raising=False)
     assert higgsfield_video.model_for(_Clip(tmp_path, **kw)) == model
 
 
-def test_pinned_video_job_takes_both_frames_and_auto_ratio(tmp_path):
-    job = higgsfield_video.job_for(_Clip(tmp_path, last_frame="end.png"), Path("start.png"), Path("end.png"), [])
-    assert job.params["aspect_ratio"] == "auto" and job.params["generate_audio"] is False
-    assert job.media == {"start-image": [Path("start.png")], "end-image": [Path("end.png")]}
+def test_pinned_video_job_defaults_to_magi2_with_normalized_params(tmp_path, monkeypatch):
+    monkeypatch.delenv(higgsfield_video.MODEL_ENV, raising=False)
+    # Missing image path falls back to 16:9; resolution forced to 1080p, duration floored to 4.
+    job = higgsfield_video.job_for(_Clip(tmp_path, last_frame="end.png", duration=2, resolution="480p"),
+                                   Path("missing_start.png"), Path("end.png"), [])
+    assert job.job_type == "magi_2"
+    assert job.params["resolution"] == "1080p"
+    assert job.params["duration"] == 4
+    assert job.params["aspect_ratio"] == "16:9"
+    assert job.params["generate_audio"] is False
+    assert job.media == {"start-image": [Path("missing_start.png")], "end-image": [Path("end.png")]}
+
+
+@pytest.mark.parametrize("size, expected_ratio", [
+    ((1920, 1080), "16:9"),
+    ((512, 512), "1:1"),
+    ((300, 400), "3:4"),
+    ((1080, 1920), "9:16"),
+    ((800, 600), "4:3"),
+])
+def test_magi2_matches_nearest_aspect_ratio_from_start_image(tmp_path, monkeypatch, size, expected_ratio):
+    monkeypatch.delenv(higgsfield_video.MODEL_ENV, raising=False)
+    img = tmp_path / f"still_{size[0]}x{size[1]}.png"
+    Image.new("RGB", size, (255, 0, 255)).save(img)
+    job = higgsfield_video.job_for(_Clip(tmp_path, last_frame=img, duration=5), img, img, [])
+    assert job.job_type == "magi_2"
+    assert job.params["aspect_ratio"] == expected_ratio
+    assert job.params["duration"] == 5
+    assert job.params["resolution"] == "1080p"
+
+
+def test_wan3_0_stays_available_via_model_or_env(tmp_path, monkeypatch):
+    monkeypatch.setenv(higgsfield_video.MODEL_ENV, "wan3_0")
+    job = higgsfield_video.job_for(_Clip(tmp_path, last_frame="end.png", duration=3, resolution="720p"),
+                                   Path("start.png"), Path("end.png"), [])
+    assert job.job_type == "wan3_0"
+    assert job.params["aspect_ratio"] == "auto"
+    assert job.params["generate_audio"] is False
+    assert job.params["duration"] == 3 and job.params["resolution"] == "720p"
 
 
 def test_the_model_env_films_every_clip_and_kling_is_told_its_mode(tmp_path, monkeypatch):
@@ -230,6 +270,41 @@ def test_the_model_env_films_every_clip_and_kling_is_told_its_mode(tmp_path, mon
     assert job.job_type == "kling4_0"
     assert job.params["mode"] == "image-to-video" and job.params["aspect_ratio"] == "auto"
     assert "generate_audio" not in job.params
+
+
+def test_magi2_generate_video_records_framing_guard_and_warns_without_deleting_mp4(tmp_path, monkeypatch, capsys):
+    from sprite_gen.gen.video import VideoRequest
+    from sprite_gen.video import framing_guard
+
+    monkeypatch.delenv(higgsfield_video.MODEL_ENV, raising=False)
+    still = tmp_path / "start.png"
+    Image.new("RGB", (160, 90), (255, 0, 255)).save(still)
+    out = tmp_path / "clip.mp4"
+    mp4_bytes = b"\x00\x00\x00\x18ftypisom" + b"\x00" * 32
+    monkeypatch.setattr(higgsfield, "run_job", lambda job, **kw: (
+        mp4_bytes, {"job_id": "job-magi", "credits": 10.0, "auth_source": "higgsfield-login", "transport": "higgsfield-cli"}
+    ))
+    monkeypatch.setattr(framing_guard, "check_first_frame_scale", lambda clip, ref: {
+        "checked": True, "passed": False, "scale_ratio": 1.49,
+        "ref_height_ratio": 0.56, "clip_height_ratio": 0.83,
+        "ref_touches_bottom": False, "clip_touches_bottom": True,
+        "max_scale_drift": 0.15, "reason": "first frame zoomed in to 1.49x reference height",
+    })
+    req = VideoRequest(
+        prompt="performs one melee attack",
+        out=out,
+        image=still,
+        last_frame=still,
+        duration=2,
+        resolution="720p",
+    )
+    result = higgsfield_video.generate_video(req)
+    assert out.is_file() and out.read_bytes() == mp4_bytes
+    assert result.model == "magi_2" and result.resolution == "1080p"
+    assert result.extra["framing_guard"]["passed"] is False
+    assert result.extra["framing_guard"]["scale_ratio"] == 1.49
+    err = capsys.readouterr().err
+    assert "framing_guard" in err and "1.49x" in err
 
 
 def test_access_reads_the_account_and_needs_no_confirmation(cli):

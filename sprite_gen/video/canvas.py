@@ -145,6 +145,8 @@ FITS = ("state", "tight")  # state: the table's room for the motion; tight: none
 TIGHT_RATIOS = {SHAPE_TALL: 9 / 16, SHAPE_SQUARE: 1.0, SHAPE_WIDE: 16 / 9}
 TIGHT_HEADROOM = 0.04  # of the subject's own height, kept above it so the head is not flush with the edge
 KEYS = ("auto", "green", "magenta", "white")  # auto: the corners decide; white: no chroma key, pad with the corner colour
+TARGET_KEYS = ("green", "magenta")
+BOTTOM_PAD_MAX = 0.35
 
 
 def profile_for(state: str | None, shape: str | None = None) -> CanvasProfile:
@@ -210,8 +212,8 @@ def resolve_key(corner: tuple[int, int, int], key: str) -> str | None:
     return key
 
 
-def normalize_key(image: Image.Image, kind: str) -> tuple[Image.Image, dict[str, Any]]:
-    """Repaint the still's flat background to the exact declared key; the subject stays byte-identical.
+def normalize_key(image: Image.Image, kind: str, *, target_kind: str | None = None) -> tuple[Image.Image, dict[str, Any]]:
+    """Repaint the still's flat background to the exact declared key (or `target_kind`); the subject stays byte-identical.
 
     The mask is the `cutout` chroma matte's own alpha-0 set (keyed from the
     painted background colour, see `extract.detect_background_key_rgb`), so the
@@ -219,7 +221,8 @@ def normalize_key(image: Image.Image, kind: str) -> tuple[Image.Image, dict[str,
     loud when a corner survives the matte — then the still is not on a key the
     engine can cut and padding it would only hide that.
     """
-    target = KEY_TARGETS[kind]
+    out_kind = target_kind or kind
+    target = KEY_TARGETS[out_kind]
     rgb = image.convert("RGB")
     keyed, stats = extract_route(rgb.convert("RGBA"), kind)
     erased = np.array(keyed, dtype=np.uint8)[..., 3] == 0
@@ -232,13 +235,42 @@ def normalize_key(image: Image.Image, kind: str) -> tuple[Image.Image, dict[str,
             f"(painted {tuple(stats['chroma_key_painted'])}); the background is not a {kind} key the engine can cut"
         )
     data[erased] = target
-    report = {
-        "key": kind,
+    report: dict[str, Any] = {
+        "key": out_kind,
         "key_painted": stats["chroma_key_painted"],
         "normalized_px": int(erased.sum()),
         "normalized_pct": round(100 * float(erased.mean()), 2),
     }
+    if out_kind != kind:
+        report["rekeyed_from"] = kind
     return Image.fromarray(data, "RGB"), report
+
+
+def _transparent_corners(image: Image.Image) -> bool:
+    """Whether `image` carries an alpha channel whose four corners are all fully transparent."""
+    if image.mode not in ("RGBA", "LA", "PA"):
+        return False
+    rgba = image.convert("RGBA")
+    w, h = rgba.size
+    return all(rgba.getpixel(p)[3] == 0 for p in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)))
+
+
+def _composite_on_key(image: Image.Image, target_kind: str) -> tuple[Image.Image, dict[str, Any]]:
+    """Composite a transparent RGBA still directly onto the exact `target_kind` chroma fill."""
+    fill = KEY_TARGETS[target_kind]
+    rgba = image.convert("RGBA")
+    bg = Image.new("RGBA", rgba.size, (*fill, 255))
+    composited = Image.alpha_composite(bg, rgba).convert("RGB")
+    alpha = np.asarray(rgba, dtype=np.uint8)[..., 3]
+    erased = alpha == 0
+    report: dict[str, Any] = {
+        "key": target_kind,
+        "key_painted": list(fill),
+        "rekeyed_from": "transparent",
+        "normalized_px": int(erased.sum()),
+        "normalized_pct": round(100 * float(erased.mean()), 2),
+    }
+    return composited, report
 
 
 def subject_box(image: Image.Image, fill: tuple[int, int, int], tolerance: int) -> tuple[int, int, int, int] | None:
@@ -333,26 +365,51 @@ def pad_canvas(
     key: str = "auto",
     fit: str = "state",
     view: str | None = None,
+    target_key: str | None = None,
+    bottom_pad: float = 0.0,
 ) -> tuple[Image.Image, dict[str, Any]]:
     """Return (padded RGB image, placement report). Never downsizes the still.
 
     On a green/magenta base the background is normalized to the exact key and
     the padding is that key; otherwise the padding is the corner colour.
+    When `target_key` (`green` | `magenta`) is given, a chroma-keyed still is
+    rekeyed to that exact colour (and an RGBA still with transparent corners is
+    composited onto it directly). `bottom_pad` (0..0.35, `fit == "state"`) adds
+    pure-key margin below the still's bottom edge.
     A `room` row filmed in one of ROOM_VIEWS (`view`) has the still's room read
     (`gait_room`, the report's `room`); a side that is short gains the columns it
     lacks and the square the rows to match, above the still. With no `view` the
     room is not read.
     """
-    corner = corner_key(image, key)
-    kind = resolve_key(corner, key)
-    if kind is None:
-        src, fill, key_report = image.convert("RGB"), corner, {"key": None, "key_painted": list(corner), "normalized_px": 0, "normalized_pct": 0.0}
+    if target_key is not None and target_key not in TARGET_KEYS:
+        raise SystemExit(f"video-canvas: unknown --target-key {target_key!r}; expected one of {', '.join(TARGET_KEYS)}")
+    if not (0.0 <= bottom_pad <= BOTTOM_PAD_MAX):
+        raise SystemExit(f"video-canvas: --bottom-pad must be in [0, {BOTTOM_PAD_MAX}], got {bottom_pad!r}")
+    if target_key is not None and _transparent_corners(image):
+        src, key_report = _composite_on_key(image, target_key)
+        fill = KEY_TARGETS[target_key]
+        corner = fill
+        kind: str | None = target_key
     else:
-        src, key_report = normalize_key(image, kind)
-        fill = KEY_TARGETS[kind]
+        corner = corner_key(image, key)
+        kind = resolve_key(corner, key)
+        if kind is None:
+            if target_key is not None:
+                raise SystemExit(
+                    f"video-canvas: --target-key {target_key} requires a chroma-keyed or transparent still; "
+                    f"the still's corners are {corner}"
+                )
+            src, fill, key_report = image.convert("RGB"), corner, {"key": None, "key_painted": list(corner), "normalized_px": 0, "normalized_pct": 0.0}
+        else:
+            out_kind = target_key or kind
+            src, key_report = normalize_key(image, kind, target_kind=out_kind)
+            fill = KEY_TARGETS[out_kind]
+            kind = out_kind
     if fit not in FITS:
         raise SystemExit(f"video-canvas: unknown --fit {fit!r}; expected one of {', '.join(FITS)}")
     if fit == "tight":
+        if bottom_pad > 0.0:
+            raise SystemExit("video-canvas: --fit tight adds no padding; drop --bottom-pad")
         # A normalized key background is the exact key, so any other value is the subject;
         # a white/ivory base only has its corner colour to go by.
         canvas, placed = tight_canvas(src, tuple(fill), tolerance=0 if kind is not None else CORNER_TOLERANCE)  # type: ignore[arg-type]
@@ -376,10 +433,11 @@ def pad_canvas(
     head = profile.headroom if headroom is None else headroom
     front = profile.lead if lead is None else lead
     back = profile.trail if trail is None else trail
-    if not 0 <= head < 0.9 or not 0 <= front < 0.9 or not 0 <= back < 0.9 or not front + back < 0.9:
-        raise SystemExit("video-canvas: --headroom/--lead/--trail must be in [0, 0.9) and lead + trail below 0.9")
+    if not 0 <= head < 0.9 or not 0 <= front < 0.9 or not 0 <= back < 0.9 or not front + back < 0.9 or not head + bottom_pad < 0.9:
+        raise SystemExit("video-canvas: --headroom/--lead/--trail must be in [0, 0.9), lead + trail < 0.9 and headroom + bottom-pad < 0.9")
     if profile.shape == SHAPE_SQUARE:
-        side = max(w, h)
+        required_h = max(h, round(h / (1 - bottom_pad))) if bottom_pad > 0 else h
+        side = max(w, required_h)
         x = (side - w) // 2
         if room is not None and room["short"]:
             # the columns each side lacks; the square's rows grow to match, above the still
@@ -388,18 +446,21 @@ def pad_canvas(
             side += added["left"] + added["right"]
             x += added["left"]
         canvas_w, canvas_h = side, side
-        y = side - h
+        bottom_px = round(canvas_h * bottom_pad) if bottom_pad > 0 else 0
+        y = max(0, canvas_h - h - bottom_px)
     elif profile.shape == SHAPE_TALL:
-        # the still becomes the bottom (1 - headroom) of a canvas at least as tall as the
+        # the still becomes the bottom (1 - headroom - bottom_pad) of a canvas at least as tall as the
         # profile ratio demands for the still's width — never narrower than the still
-        canvas_h = max(h, round(h / (1 - head)), round(w / profile.ratio))
+        canvas_h = max(h, round(h / (1 - head - bottom_pad)), round(w / profile.ratio))
         canvas_w = max(w, round(canvas_h * profile.ratio))
-        x, y = (canvas_w - w) // 2, canvas_h - h
+        bottom_px = round(canvas_h * bottom_pad) if bottom_pad > 0 else 0
+        x, y = (canvas_w - w) // 2, max(0, canvas_h - h - bottom_px)
     else:  # wide: `trail` of the width stays empty behind the subject, the rest of the extra width goes in front; at least the profile ratio
-        required_h = max(h, round(h / (1 - head)))
+        required_h = max(h, round(h / (1 - head - bottom_pad)))
         canvas_w = max(w, round(w / (1 - front - back)), round(required_h * profile.ratio))
-        canvas_h = max(h, round(canvas_w / profile.ratio))
-        y = canvas_h - h
+        canvas_h = max(required_h, round(canvas_w / profile.ratio))
+        bottom_px = round(canvas_h * bottom_pad) if bottom_pad > 0 else 0
+        y = max(0, canvas_h - h - bottom_px)
         behind = min(round(canvas_w * back), canvas_w - w)
         x = behind if facing == "right" else canvas_w - w - behind
     canvas = Image.new("RGB", (canvas_w, canvas_h), fill)
@@ -414,6 +475,7 @@ def pad_canvas(
         "headroom": head,
         "lead": front,
         "trail": back,
+        **({"bottom_pad": bottom_pad} if bottom_pad > 0 else {}),
         "facing": facing,
         "key_rgb": list(fill),
         "corner_rgb": list(corner),
@@ -439,25 +501,30 @@ def run_canvas(
     fit: str = "state",
     view: str | None = None,
     prop_plate: bool = False,
+    target_key: str | None = None,
+    bottom_pad: float = 0.0,
 ) -> dict[str, Any]:
     still = still.expanduser().resolve()
     if not still.is_file():
         raise SystemExit(f"video-canvas: still not found: {still}")
-    if fit == "tight" and (shape is not None or headroom is not None or lead is not None or trail is not None):
-        raise SystemExit("video-canvas: --fit tight picks its own shape and adds no room; drop --shape/--headroom/--lead/--trail")
+    if fit == "tight" and (shape is not None or headroom is not None or lead is not None or trail is not None or bottom_pad > 0.0):
+        raise SystemExit("video-canvas: --fit tight picks its own shape and adds no room; drop --shape/--headroom/--lead/--trail/--bottom-pad")
     if prop_plate and report_path is None:
         raise SystemExit("video-canvas: --prop-plate needs --report: the plate's box is written there for video-frames --prop-plate")
     if state == "effect":
         from . import effect
         if prop_plate:
             raise SystemExit("video-canvas: an effect keeps its source canvas; drop --prop-plate")
-        if fit != "state" or any(v is not None for v in (shape, headroom, lead, trail)):
+        if fit != "state" or target_key is not None or bottom_pad > 0.0 or any(v is not None for v in (shape, headroom, lead, trail)):
             raise SystemExit("video-canvas: an effect keeps its source canvas and center; drop framing overrides")
         with Image.open(still) as image:
             canvas, report = effect.canvas(image)
     else:
         profile = profile_for(state, shape)
-        canvas, report = pad_canvas(Image.open(still), profile, facing=facing, headroom=headroom, lead=lead, trail=trail, key=key, fit=fit, view=view)
+        canvas, report = pad_canvas(
+            Image.open(still), profile, facing=facing, headroom=headroom, lead=lead, trail=trail,
+            key=key, fit=fit, view=view, target_key=target_key, bottom_pad=bottom_pad,
+        )
         if prop_plate:
             if report["key"] != "green":
                 raise SystemExit(f"video-canvas: --prop-plate paints a magenta plate on a green key; the still's key is {report['key'] or 'not a chroma key'}")
@@ -485,6 +552,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--lead", type=float, help="wide: empty fraction in front of the subject (default from the profile)")
     parser.add_argument("--trail", type=float, help="wide: empty fraction behind the subject, for a weapon drawn back (default from the profile)")
     parser.add_argument("--key", choices=KEYS, default="auto", help="chroma key of the still (auto reads the corners; green/magenta are normalized to the exact key; white pads with the corner colour)")
+    parser.add_argument("--target-key", choices=TARGET_KEYS, default=None, help="rekey a chroma-keyed or transparent still onto this exact output key colour (green or magenta)")
+    parser.add_argument("--bottom-pad", type=float, default=0.0, help=f"empty fraction of canvas height kept below the still (0..{BOTTOM_PAD_MAX}, --fit state only)")
     parser.add_argument("--fit", choices=FITS, default="state", help="state: the state's room for the motion (default); tight: drop the empty rows around the subject and add no room, so it fills the frame and a motion that leaves it is clipped")
     parser.add_argument("--view", choices=VIEWS, help="the still's view; a walk or run from the side has the still's room around its silhouette read, and its square widened by the room it lacks (`room` in the report). Left out, the room is not read")
     parser.add_argument("--prop-plate", action="store_true", help="paint a flat magenta plate, a low wall for the subject to clear, on the ground in front of it (the side it faces), sized by its height; green key only, needs --report, where its box is written for `video-frames --prop-plate` to erase")
@@ -498,6 +567,8 @@ def run(**kwargs: object) -> int:
         headroom=kwargs.get("headroom"), lead=kwargs.get("lead"), trail=kwargs.get("trail"), report_path=kwargs.get("report"),  # type: ignore[arg-type]
         key=str(kwargs.get("key") or "auto"), fit=str(kwargs.get("fit") or "state"), view=kwargs.get("view"),  # type: ignore[arg-type]
         prop_plate=bool(kwargs.get("prop_plate")),
+        target_key=kwargs.get("target_key"),  # type: ignore[arg-type]
+        bottom_pad=float(kwargs.get("bottom_pad") or 0.0),
     )
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
