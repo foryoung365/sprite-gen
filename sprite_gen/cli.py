@@ -21,6 +21,7 @@ from sprite_gen.video import batch as video_batch
 from sprite_gen.video import canvas as video_canvas
 from sprite_gen.video import frames as video_frames
 from sprite_gen.video import loop as video_loop
+from sprite_gen.video import colour_lock as video_colour_lock
 from sprite_gen.video import clip_prompt as video_prompt
 from sprite_gen.video import align as video_align
 from sprite_gen.video import follow as video_follow
@@ -351,6 +352,11 @@ COMMANDS: dict[str, tuple[str, Callable[[argparse.ArgumentParser], None], Callab
         "Extract a clip's frames and key the chroma out into RGBA frames (edge-contact checked).",
         video_frames.add_arguments,
         video_frames.run,
+    ),
+    "video-color-lock": (
+        "Lock OKLab chroma of keyed RGBA frames to a master still across five height bands (preserving lightness and alpha), or measure colour flicker.",
+        video_colour_lock.add_arguments,
+        video_colour_lock.run,
     ),
     "video-loop": (
         "Find the true period in keyed frames and emit one seamless cycle: strip + meta, transparent GIF, WebP.",

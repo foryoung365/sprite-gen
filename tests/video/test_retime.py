@@ -170,3 +170,80 @@ def test_hold_plateau_tightens_past_secondary_weapon_motion() -> None:
     assert hold_hi >= 60
     assert any(22 <= idx <= 29 for idx in rep["source_indices"])
     assert len(out) < 35
+
+
+def test_retime_action_emits_events_and_explicit_hit_frame_and_hit_stop() -> None:
+    frames = _make_attack_frames(twitch_in_hold=True)  # 105 frames @ 25 fps
+
+    # Auto mode emits structured events and auto hit metadata
+    out_auto, rep_auto = retime_mod.retime_action(frames, fps=25.0, state="attack", cycle_mode="pinned", mode="auto")
+    assert rep_auto["applied"] is True
+    assert rep_auto["hit_source"] == "auto"
+    assert isinstance(rep_auto["hit_source_frame"], int)
+    assert isinstance(rep_auto["hit_output_frame"], int)
+    assert rep_auto["hit_stop_ms"] > 0
+    assert rep_auto["duration_ms"] == round(len(out_auto) * 1000.0 / 25.0)
+    names = [e["name"] for e in rep_auto["events"]]
+    assert names == ["in", "hit", "cancel", "end"]
+    assert rep_auto["events"][0] == {"name": "in", "frame": 0, "at_ms": 0, "tick_60hz": 0}
+    assert rep_auto["events"][1]["frame"] == rep_auto["hit_output_frame"]
+    assert rep_auto["events"][1]["frame"] <= rep_auto["events"][2]["frame"] <= rep_auto["events"][3]["frame"]
+    assert rep_auto["events"][3]["at_ms"] == rep_auto["duration_ms"]
+
+    # Explicit hit_frame=31 and hit_stop_ms=120 (3 frames @ 25 fps)
+    out_exp, rep_exp = retime_mod.retime_action(
+        frames, fps=25.0, state="attack", cycle_mode="pinned", mode="auto", hit_frame=31, hit_stop_ms=120
+    )
+    assert rep_exp["applied"] is True
+    assert rep_exp["hit_source"] == "explicit"
+    assert rep_exp["hit_source_frame"] == 31
+    assert rep_exp["hit_stop_ms"] == 120
+    assert rep_exp["source_indices"][rep_exp["hit_output_frame"]] == 31
+    assert rep_exp["events"][1]["frame"] == rep_exp["hit_output_frame"]
+    # Recovery is strictly non-decreasing
+    rec_slice = rep_exp["source_indices"][rep_exp["hit_output_frame"] :]
+    assert all(rec_slice[k + 1] >= rec_slice[k] for k in range(len(rec_slice) - 1))
+
+    # hit_stop_ms=0 removes extra hold frames
+    out_zero, rep_zero = retime_mod.retime_action(
+        frames, fps=25.0, state="attack", cycle_mode="pinned", mode="auto", hit_frame=31, hit_stop_ms=0
+    )
+    assert rep_zero["applied"] is True
+    assert rep_zero["hit_stop_ms"] == 0
+    assert len(out_zero) < len(out_exp)
+
+
+def test_assert_monotonic_recovery_rejects_reverse_indices() -> None:
+    retime_mod.assert_monotonic_recovery([0, 10, 20, 31, 31, 45, 60], hit_output_frame=3)
+    with pytest.raises(ValueError, match="must not reverse"):
+        retime_mod.assert_monotonic_recovery([0, 10, 20, 31, 28, 45], hit_output_frame=3)
+
+
+def test_run_loop_threads_hit_frame_hit_stop_and_color_lock_into_strip_meta(tmp_path: Path) -> None:
+    keyed = tmp_path / "keyed"
+    keyed.mkdir()
+    frames = _make_attack_frames()
+    frames.append(frames[0].copy())
+    for k, im in enumerate(frames):
+        im.save(keyed / f"frame-{k:04d}.png")
+
+    rep = loop_mod.run_loop(
+        keyed, tmp_path / "loop_exp", fps=25.0, state="attack", min_len=None, max_len=None,
+        n_out=None, seam_max=loop_mod.SEAM_RATIO_MAX, name="atk", report_path=None,
+        cycle_mode="pinned", action_retime="auto", hit_frame=25, hit_stop_ms=120,
+        color_lock="on", color_lock_strength=0.8, fill_held="off", repair="off",
+    )
+    assert rep["action_retime"]["hit_source"] == "explicit"
+    assert rep["action_retime"]["hit_source_frame"] == 25
+    assert rep["action_retime"]["hit_stop_ms"] == 120
+    assert [e["name"] for e in rep["action_retime"]["events"]] == ["in", "hit", "cancel", "end"]
+    assert rep["color_lock"]["applied"] is True
+    assert rep["color_lock"]["loop"] is False
+
+    strip_meta = json.loads((tmp_path / "loop_exp" / "atk.strip.json").read_text())
+    assert strip_meta["action_retime"]["hit_source"] == "explicit"
+    assert strip_meta["action_retime"]["hit_source_frame"] == 25
+    assert strip_meta["action_retime"]["hit_stop_ms"] == 120
+    assert [e["name"] for e in strip_meta["action_retime"]["events"]] == ["in", "hit", "cancel", "end"]
+    assert strip_meta["color_lock"]["applied"] is True
+    assert strip_meta["color_lock"]["strength"] == 0.8

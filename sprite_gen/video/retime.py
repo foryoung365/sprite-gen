@@ -4,13 +4,15 @@
 4-second pinned video clips (such as `magi_2`'s minimum 4 s duration) often perform a
 single melee strike, freeze at the impact pose for 1–2 seconds, then recover and stand
 still until the end of the clip. This module detects the active windup/strike/recovery
-phases and dead hold plateau, then resamples the original crisp frames into a punchy
-~0.8–1.1 s loop at the source fps while preserving exact start/end closure.
+phases and dead hold plateau (or accepts an explicit `--hit-frame` and `--hit-stop-ms`),
+resamples the original crisp frames into a punchy ~0.8–1.1 s sequence at the source fps
+while preserving monotonic forward recovery and emitting a structured gameplay event
+timeline (`in`, `hit`, `cancel`, `end`) on the 60 Hz tick grid.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Sequence
 
 from PIL import Image
 
@@ -21,6 +23,7 @@ ACTION_RETIME_DEFAULT = "auto"
 ACTION_RETIME_STATES = frozenset({"attack"})
 ACTION_RETIME_CYCLES = frozenset({"pinned", "one-shot", "once-return"})
 
+TICK_HZ = 60
 THUMB_SIZE = (160, 90)
 MIN_FRAMES = 12
 AUTO_MIN_DURATION_S = 3.2
@@ -143,8 +146,14 @@ def _find_hold_plateau(
 
     min_frames = max(3, round(HOLD_MIN_RUN_S * fps))
     tightened = [
-        t for lo, hi in merged
-        if (t := _tighten_hold_plateau(feats, lo, hi, peak_dist=peak_dist, min_frames=min_frames, max_gap=max_gap)) is not None
+        t
+        for lo, hi in merged
+        if (
+            t := _tighten_hold_plateau(
+                feats, lo, hi, peak_dist=peak_dist, min_frames=min_frames, max_gap=max_gap
+            )
+        )
+        is not None
     ]
     if not tightened:
         return None
@@ -175,6 +184,47 @@ def _sample_segment(start: int, end: int, count: int, *, curve: str = "linear") 
     return out
 
 
+def _ms_to_tick_60hz(at_ms: int) -> int:
+    return (2 * int(at_ms) * TICK_HZ + 1000) // 2000
+
+
+def _frame_to_ms(frame_idx: int, fps: float) -> int:
+    return int(round(frame_idx * 1000.0 / fps))
+
+
+def assert_monotonic_recovery(indices: Sequence[int], hit_output_frame: int) -> None:
+    """Assert attack recovery never plays source frames backwards (strictly non-decreasing)."""
+    start = max(0, int(hit_output_frame))
+    for pos in range(start, len(indices) - 1):
+        if indices[pos + 1] < indices[pos]:
+            raise ValueError(
+                f"attack recovery must not reverse: output frames {pos}->{pos + 1} "
+                f"go backwards from source {indices[pos]} to {indices[pos + 1]}"
+            )
+
+
+def build_events(
+    *,
+    frame_count: int,
+    fps: float,
+    hit_output_frame: int,
+    cancel_output_frame: int,
+) -> list[dict[str, Any]]:
+    """Build structured gameplay timeline events (`in`, `hit`, `cancel`, `end`) on the 60 Hz tick grid."""
+    duration_ms = _frame_to_ms(frame_count, fps)
+    last_frame = max(0, frame_count - 1)
+    hit_f = max(0, min(last_frame, int(hit_output_frame)))
+    cancel_f = max(hit_f, min(last_frame, int(cancel_output_frame)))
+    hit_ms = _frame_to_ms(hit_f, fps)
+    cancel_ms = _frame_to_ms(cancel_f, fps)
+    return [
+        {"name": "in", "frame": 0, "at_ms": 0, "tick_60hz": 0},
+        {"name": "hit", "frame": hit_f, "at_ms": hit_ms, "tick_60hz": _ms_to_tick_60hz(hit_ms)},
+        {"name": "cancel", "frame": cancel_f, "at_ms": cancel_ms, "tick_60hz": _ms_to_tick_60hz(cancel_ms)},
+        {"name": "end", "frame": last_frame, "at_ms": duration_ms, "tick_60hz": _ms_to_tick_60hz(duration_ms)},
+    ]
+
+
 def _unapplied(mode: str, n: int, fps: float, why: str) -> dict[str, Any]:
     dur = round(n / fps, 3) if fps > 0 else 0.0
     return {
@@ -189,6 +239,18 @@ def _unapplied(mode: str, n: int, fps: float, why: str) -> dict[str, Any]:
     }
 
 
+def _append_strict(out: list[int], items: Sequence[int], n: int) -> None:
+    for idx in items:
+        if 0 <= idx < n and (not out or idx > out[-1]):
+            out.append(idx)
+
+
+def _append_nondecreasing(out: list[int], items: Sequence[int], n: int) -> None:
+    for idx in items:
+        if 0 <= idx < n and (not out or idx >= out[-1]):
+            out.append(idx)
+
+
 def _select_indices(
     n: int,
     *,
@@ -198,7 +260,9 @@ def _select_indices(
     peak_idx: int,
     active_end: int,
     hold: tuple[int, int] | None,
-) -> tuple[list[int], int]:
+    hit_frame: int | None = None,
+    hit_stop_ms: int | None = None,
+) -> dict[str, Any]:
     """Assemble monotonic source frame indices for lead, strike, hitstop, recovery and tail."""
     indices: list[int] = [0]
     if active_start >= 2:
@@ -206,36 +270,92 @@ def _select_indices(
         if lead_second > 0:
             indices.append(lead_second)
 
-    if hold is not None:
-        hold_start, hold_end = hold
-        strike_end = max(active_start, hold_start - 1)
-        strike_n = max(4, round(TARGET_STRIKE_S * fps))
-        indices.extend(_sample_segment(active_start, strike_end, strike_n, curve="ease-in"))
-
+    strike_n = max(4, round(TARGET_STRIKE_S * fps))
+    if hit_stop_ms is None:
         hitstop_n = max(2, round(TARGET_HITSTOP_S * fps))
-        anchor = (hold_start + hold_end) // 2
-        hs_lo = max(hold_start, anchor - hitstop_n // 2)
-        hs_hi = min(hold_end, hs_lo + hitstop_n - 1)
-        hs_lo = max(hold_start, hs_hi - hitstop_n + 1)
-        hitstop_indices = _sample_segment(hs_lo, hs_hi, hitstop_n, curve="linear")
-        indices.extend(hitstop_indices)
-        kept_hold_frames = len(hitstop_indices)
-        rec_start = min(active_end, hold_end + 1)
+    elif hit_stop_ms == 0:
+        hitstop_n = 0
     else:
-        strike_end = max(active_start, peak_idx)
-        strike_n = max(4, round(TARGET_STRIKE_S * fps))
-        indices.extend(_sample_segment(active_start, strike_end, strike_n, curve="ease-in"))
+        hitstop_n = max(1, round((hit_stop_ms / 1000.0) * fps))
 
-        hitstop_n = max(2, round(TARGET_HITSTOP_S * fps))
-        hs_lo = max(active_start, peak_idx)
-        hs_hi = min(active_end, peak_idx + hitstop_n - 1)
-        indices.extend(_sample_segment(hs_lo, hs_hi, hitstop_n, curve="linear"))
-        kept_hold_frames = 0
-        rec_start = min(active_end, hs_hi + 1)
+    # Preserve exact legacy auto selection when neither hit_frame nor hit_stop_ms is overridden.
+    if hit_frame is None and hit_stop_ms is None:
+        if hold is not None:
+            hold_start, hold_end = hold
+            strike_end = max(active_start, hold_start - 1)
+            _append_strict(indices, _sample_segment(active_start, strike_end, strike_n, curve="ease-in"), n)
 
+            anchor = (hold_start + hold_end) // 2
+            hs_lo = max(hold_start, anchor - hitstop_n // 2)
+            hs_hi = min(hold_end, hs_lo + hitstop_n - 1)
+            hs_lo = max(hold_start, hs_hi - hitstop_n + 1)
+            hitstop_indices = _sample_segment(hs_lo, hs_hi, hitstop_n, curve="linear")
+            hit_output_frame = len(indices)
+            _append_strict(indices, hitstop_indices, n)
+            hit_output_frame = min(hit_output_frame, len(indices) - 1)
+            hit_source_frame = indices[hit_output_frame]
+            kept_hold_frames = len(hitstop_indices)
+            actual_hitstop_frames = len(hitstop_indices)
+            rec_start = min(active_end, hold_end + 1)
+        else:
+            strike_end = max(active_start, peak_idx)
+            _append_strict(indices, _sample_segment(active_start, strike_end, strike_n, curve="ease-in"), n)
+
+            hs_lo = max(active_start, peak_idx)
+            hs_hi = min(active_end, peak_idx + hitstop_n - 1)
+            before_hs = len(indices)
+            _append_strict(indices, _sample_segment(hs_lo, hs_hi, hitstop_n, curve="linear"), n)
+            hit_source_frame = peak_idx
+            hit_output_frame = (
+                indices.index(peak_idx) if peak_idx in indices else min(before_hs, len(indices) - 1)
+            )
+            kept_hold_frames = 0
+            actual_hitstop_frames = max(1, len(indices) - hit_output_frame)
+            rec_start = min(active_end, hs_hi + 1)
+    else:
+        # Explicit hit_frame and/or explicit hit_stop_ms.
+        near_margin = max(2, round(0.15 * fps))
+        if hit_frame is not None:
+            hit_src = int(hit_frame)
+            hold_aligned = hold is not None and (hold[0] - near_margin) <= hit_src <= hold[1]
+        else:
+            hold_aligned = hold is not None
+            hit_src = ((hold[0] + hold[1]) // 2) if hold is not None else peak_idx
+
+        if hit_src > active_start:
+            _append_strict(indices, _sample_segment(active_start, hit_src - 1, strike_n, curve="ease-in"), n)
+
+        hit_output_frame = len(indices)
+        if hitstop_n == 0:
+            _append_nondecreasing(indices, [hit_src], n)
+            kept_hold_frames = 1 if hold_aligned else 0
+            actual_hitstop_frames = 0
+            rec_start = (hold[1] + 1) if (hold_aligned and hold is not None) else (hit_src + 1)
+        elif hold_aligned and hold is not None:
+            hold_start, hold_end = hold
+            hs_lo = hit_src
+            hs_hi = min(hold_end, hs_lo + hitstop_n - 1)
+            hs_seq = list(range(hs_lo, hs_hi + 1)) if hs_hi >= hs_lo else [hit_src]
+            if len(hs_seq) < hitstop_n:
+                hs_seq.extend([hs_seq[-1]] * (hitstop_n - len(hs_seq)))
+            _append_nondecreasing(indices, hs_seq, n)
+            kept_hold_frames = len(hs_seq)
+            actual_hitstop_frames = len(hs_seq)
+            rec_start = hold_end + 1
+        else:
+            hs_seq = [hit_src] * hitstop_n
+            _append_nondecreasing(indices, hs_seq, n)
+            kept_hold_frames = 0
+            actual_hitstop_frames = len(hs_seq)
+            rec_start = hit_src + 1
+        hit_output_frame = min(hit_output_frame, len(indices) - 1)
+        hit_source_frame = hit_src
+
+    rec_out_start = len(indices)
     if rec_start <= active_end:
         rec_n = max(4, round(TARGET_RECOVERY_S * fps))
-        indices.extend(_sample_segment(rec_start, active_end, rec_n, curve="ease-out"))
+        _append_strict(indices, _sample_segment(rec_start, active_end, rec_n, curve="ease-out"), n)
+    rec_out_end = len(indices) - 1
 
     tail_candidates: list[int] = []
     if active_end + 1 < n:
@@ -244,14 +364,21 @@ def _select_indices(
         tail_candidates.append(n - 1)
     elif active_end + 3 < n:
         tail_candidates.append(active_end + 3)
-    indices.extend(tail_candidates[:MAX_REST_FRAMES])
+    _append_strict(indices, tail_candidates[:MAX_REST_FRAMES], n)
 
-    # Deduplicate while preserving strictly increasing order.
-    deduped: list[int] = []
-    for idx in indices:
-        if 0 <= idx < n and (not deduped or idx > deduped[-1]):
-            deduped.append(idx)
-    return deduped, kept_hold_frames
+    if rec_out_end >= rec_out_start:
+        cancel_output_frame = (rec_out_start + rec_out_end) // 2
+    else:
+        cancel_output_frame = min(len(indices) - 1, hit_output_frame + max(1, actual_hitstop_frames))
+
+    return {
+        "indices": indices,
+        "kept_hold_frames": kept_hold_frames,
+        "hit_source_frame": int(hit_source_frame),
+        "hit_output_frame": int(hit_output_frame),
+        "hitstop_frames": int(actual_hitstop_frames),
+        "cancel_output_frame": int(cancel_output_frame),
+    }
 
 
 def retime_action(
@@ -261,11 +388,18 @@ def retime_action(
     state: str,
     cycle_mode: str,
     mode: str = ACTION_RETIME_DEFAULT,
+    hit_frame: int | None = None,
+    hit_stop_ms: int | None = None,
 ) -> tuple[list[Image.Image], dict[str, Any]]:
-    """Trim dead mid-action holds and idle padding from an attack cycle."""
+    """Trim dead mid-action holds and idle padding from an attack cycle and emit gameplay events."""
     if mode not in ACTION_RETIME_MODES:
         raise ValueError(f"unknown action_retime mode {mode!r}; expected one of {', '.join(ACTION_RETIME_MODES)}")
     n = len(frames)
+    if hit_frame is not None and not (0 <= int(hit_frame) < n):
+        raise ValueError(f"hit_frame {hit_frame} is outside 0..{max(0, n - 1)}")
+    if hit_stop_ms is not None and int(hit_stop_ms) < 0:
+        raise ValueError(f"hit_stop_ms must be >= 0, got {hit_stop_ms!r}")
+
     if mode == "off":
         return frames, _unapplied(mode, n, fps, "turned off (--action-retime off)")
     if n < MIN_FRAMES:
@@ -282,20 +416,31 @@ def retime_action(
     peak_idx = int(np.argmax(dist))
     peak_dist = float(dist[peak_idx])
     max_step = float(step.max())
-    if peak_dist <= 1e-5 or max_step <= 1e-6:
+    if hit_frame is None and (peak_dist <= 1e-5 or max_step <= 1e-6):
         return frames, _unapplied(mode, n, fps, "no clear action excursion")
 
     active_thresh = max(ACTIVE_DIST_FRACTION * peak_dist, 1e-4)
     active = np.flatnonzero(dist >= active_thresh)
     if active.size < 4:
-        return frames, _unapplied(mode, n, fps, "active excursion too short")
-    active_start = int(active[0])
-    active_end = int(active[-1])
-    if active_end - active_start < 4:
+        if hit_frame is None:
+            return frames, _unapplied(mode, n, fps, "active excursion too short")
+        active_start = max(1, int(hit_frame) - max(3, round(0.25 * fps)))
+        active_end = min(n - 1, int(hit_frame) + max(3, round(0.25 * fps)))
+    else:
+        active_start = int(active[0])
+        active_end = int(active[-1])
+        if hit_frame is not None:
+            active_start = min(active_start, int(hit_frame))
+            active_end = max(active_end, int(hit_frame))
+    if active_end - active_start < 4 and hit_frame is None:
         return frames, _unapplied(mode, n, fps, "active span too narrow")
 
-    hold = _find_hold_plateau(
-        feats, dist, step, start=active_start, end=active_end, peak_dist=peak_dist, max_step=max_step, fps=fps
+    hold = (
+        _find_hold_plateau(
+            feats, dist, step, start=active_start, end=active_end, peak_dist=peak_dist, max_step=max_step, fps=fps
+        )
+        if peak_dist > 1e-5 and max_step > 1e-6
+        else None
     )
     hold_frames = (hold[1] - hold[0] + 1) if hold is not None else 0
     hold_duration_s = hold_frames / fps
@@ -303,7 +448,7 @@ def retime_action(
     idle_duration_s = idle_frames / fps
     total_duration_s = n / fps
 
-    if mode == "auto":
+    if mode == "auto" and hit_frame is None:
         if total_duration_s < AUTO_MIN_DURATION_S:
             return frames, _unapplied(
                 mode, n, fps, f"duration {total_duration_s:.2f} s < {AUTO_MIN_DURATION_S:.1f} s auto threshold"
@@ -316,7 +461,7 @@ def retime_action(
                 f"no long dead hold ({hold_duration_s:.2f} s) or excess idle ({idle_duration_s:.2f} s)",
             )
 
-    indices, kept_hold = _select_indices(
+    selected = _select_indices(
         n,
         fps=fps,
         cycle_mode=cycle_mode,
@@ -324,14 +469,32 @@ def retime_action(
         peak_idx=peak_idx,
         active_end=active_end,
         hold=hold,
+        hit_frame=hit_frame,
+        hit_stop_ms=hit_stop_ms,
     )
+    indices: list[int] = selected["indices"]
     if len(indices) >= n or len(indices) < 6:
         return frames, _unapplied(mode, n, fps, "clip is already compact")
 
+    hit_output_frame: int = selected["hit_output_frame"]
+    assert_monotonic_recovery(indices, hit_output_frame)
+
     out_frames = [frames[idx] for idx in indices]
+    kept_hold = selected["kept_hold_frames"]
     dead_hold_trimmed_s = max(0.0, (hold_frames - kept_hold) / fps) if hold is not None else 0.0
+    actual_hit_stop_ms = 0 if hit_stop_ms == 0 else _frame_to_ms(selected["hitstop_frames"], fps)
+    duration_ms = _frame_to_ms(len(out_frames), fps)
+    events = build_events(
+        frame_count=len(out_frames),
+        fps=fps,
+        hit_output_frame=hit_output_frame,
+        cancel_output_frame=selected["cancel_output_frame"],
+    )
+
     reasons: list[str] = []
-    if hold is not None:
+    if hit_frame is not None:
+        reasons.append(f"explicit hit frame {int(hit_frame)}")
+    if hold is not None and dead_hold_trimmed_s > 0:
         reasons.append(f"trimmed {dead_hold_trimmed_s:.2f} s mid-action hold")
     if idle_duration_s >= 0.2:
         reasons.append(f"trimmed excess rest ({idle_duration_s:.2f} s)")
@@ -346,7 +509,13 @@ def retime_action(
         "frames_after": len(out_frames),
         "duration_before": round(total_duration_s, 3),
         "duration_after": round(len(out_frames) / fps, 3),
+        "duration_ms": duration_ms,
         "dead_hold_trimmed_s": round(dead_hold_trimmed_s, 3),
+        "hit_source": "explicit" if hit_frame is not None else "auto",
+        "hit_source_frame": selected["hit_source_frame"],
+        "hit_output_frame": hit_output_frame,
+        "hit_stop_ms": actual_hit_stop_ms,
+        "events": events,
         "source_indices": indices,
         "phases": {
             "active_start": active_start,

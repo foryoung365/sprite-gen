@@ -79,6 +79,7 @@ from sprite_gen.frames.extract import _SPILL_FULL_MIN_TINT, DEFAULT_UNMIX_REACH
 from sprite_gen.frames.extract import BORDER_MIN_FRACTION, FRAME_SIDES, own_border
 from sprite_gen.spec.runio import atomic_write_text, new_stage, refuse_overlap
 from sprite_gen.util.console import utf8_streams
+from sprite_gen.video import fix_clauses as fix_clauses_mod
 from sprite_gen.video import framing_guard as framing_guard_mod
 from sprite_gen.video import prop_plate as plate_mod
 
@@ -700,6 +701,23 @@ def _edge_contact_message(contacts: list[dict[str, Any]]) -> str:
     return message
 
 
+def _suggest_refusal_fixes(message: str, report: dict[str, Any]) -> list[str]:
+    """Map a video-frames refusal to recommended `--fix` clause IDs."""
+    if "0% transparency" in message:
+        return fix_clauses_mod.suggest_fixes_for_gates(["keying"])
+    contacts = report.get("edge_contacts") or []
+    has_subject = any(int(c.get("subject") or 0) > 0 for c in contacts)
+    has_residual = any(int(c.get("residual") or 0) > 0 for c in contacts)
+    gates: list[str] = []
+    if has_subject:
+        gates.append("edge_contact")
+    if has_residual:
+        gates.append("keying")
+    if not gates:
+        gates.append("edge_contact")
+    return fix_clauses_mod.suggest_fixes_for_gates(gates)
+
+
 def run_frames(clip: Path, out_dir: Path, *, key: str, allow_edge_contact: bool, report_path: Path | None, spill: str = "small", reference: Path | None = None, allow_subject_edge_contact: bool = False, decontam: str = DECONTAM_DEFAULT, source_manifest: Path | None = None, alpha_mode: str = "chroma", prop_plate: Path | None = None, check_framing: bool = True) -> dict[str, Any]:
     from . import effect
     if alpha_mode not in effect.ALPHA_MODES:
@@ -742,22 +760,30 @@ def run_frames(clip: Path, out_dir: Path, *, key: str, allow_edge_contact: bool,
         with Image.open(Path(reference).expanduser().resolve()) as ref_im, Image.open(files[0]) as f0_im:
             framing_guard = framing_guard_mod.compare_subject_framing(ref_im, f0_im, key=key)
         if framing_guard.get("checked") and not framing_guard.get("passed"):
+            suggested = fix_clauses_mod.suggest_fixes_for_gates(["framing_guard"])
             error = (
                 f"video-frames: first frame was reframed by the video model ({framing_guard.get('reason')}; "
                 f"scale_ratio={framing_guard.get('scale_ratio')}) — regenerate the clip or pass --allow-reframe to skip this check"
             )
             payload = {**head, "status": "refused", "error": error, "keyed_dir": None, "refused_dir": None,
-                       "key": key, "spill": decision, "framing_guard": framing_guard, **meta}
+                       "key": key, "spill": decision, "framing_guard": framing_guard,
+                       "suggested_fixes": suggested, **meta}
             atomic_write_text(target, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+            if suggested:
+                print(f"video-frames: suggested --fix: {', '.join(suggested)}", file=sys.stderr)
             raise SystemExit(error)
     try:
         report = key_frames(files, keyed_dir, key=key, check_edges=not allow_edge_contact, spill=decision["mode"], allow_subject=allow_subject_edge_contact, decontam=decontam, alpha_mode=alpha_mode, plate=plate)
     except KeyingRefused as refused:
         # The run's record, written whatever it found: the frames it keyed are in `refused_dir`, and nothing is handed over.
+        suggested = _suggest_refusal_fixes(str(refused), refused.report)
         payload = {**head, "status": "refused", "error": str(refused), "keyed_dir": None, "refused_dir": str(refused_dir(keyed_dir)),
                    "key": key, "spill": decision, **({"framing_guard": framing_guard} if framing_guard is not None else {}),
+                   **({"suggested_fixes": suggested} if suggested else {}),
                    **meta, **refused.report}
         atomic_write_text(target, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+        if suggested:
+            print(f"video-frames: suggested --fix: {', '.join(suggested)}", file=sys.stderr)
         raise
     payload = {**head, "status": "passed", "keyed_dir": str(keyed_dir), "key": key, "spill": decision,
                **({"framing_guard": framing_guard} if framing_guard is not None else {}), **meta, **report}

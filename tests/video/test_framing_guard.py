@@ -130,6 +130,7 @@ def test_run_frames_refuses_reframed_clip_before_keying_and_allows_with_flag(tmp
     assert rep["status"] == "refused"
     assert rep["framing_guard"]["checked"] is True and rep["framing_guard"]["passed"] is False
     assert rep["framing_guard"]["scale_ratio"] > 1.4
+    assert rep["suggested_fixes"] == ["camera-locked", "inside-frame"]
 
     # Passing check_framing=False (--allow-reframe) skips the gate and proceeds to key_frames.
     ok_rep = frames_mod.run_frames(
@@ -138,3 +139,52 @@ def test_run_frames_refuses_reframed_clip_before_keying_and_allows_with_flag(tmp
     )
     assert ok_rep["status"] == "passed"
     assert len(key_calls) == 1
+
+
+def test_run_frames_writes_suggested_fixes_on_framing_and_edge_contact_refusals(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    ref = tmp_path / "canvas.png"
+    _sprite_frame(bg=MAGENTA, top=50, bottom=150).save(ref)
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"fake-mp4")
+
+    def fake_probe(_clip: Path):
+        return {"width": 320, "height": 180, "fps": 25.0, "nb_frames": 2, "duration": 0.08,
+                "stream_index": 0, "codec": "h264", "pix_fmt": "yuv420p", "audio_streams": 0, "cover_streams": 0}
+
+    def fake_extract_zoom(_clip: Path, dst_raw: Path, _stream: int | None):
+        dst_raw.mkdir(parents=True, exist_ok=True)
+        p = dst_raw / "frame-0000.png"
+        _sprite_frame(bg=MAGENTA, top=30, bottom=179).save(p)
+        return [p]
+
+    monkeypatch.setattr(frames_mod, "probe", fake_probe)
+    monkeypatch.setattr(frames_mod, "extract", fake_extract_zoom)
+
+    with pytest.raises(SystemExit):
+        frames_mod.run_frames(
+            clip, tmp_path / "out_zoom", key="magenta", allow_edge_contact=False,
+            report_path=None, spill="small", reference=ref,
+        )
+    stderr_zoom = capsys.readouterr().err
+    assert "suggested --fix: camera-locked, inside-frame" in stderr_zoom
+    rep_zoom = json.loads((tmp_path / "out_zoom" / "frames.report.json").read_text())
+    assert rep_zoom["suggested_fixes"] == ["camera-locked", "inside-frame"]
+
+    def fake_key_edge_refuse(*args, **kwargs):
+        raise frames_mod.KeyingRefused(
+            "video-frames: the subject touches the frame edge in 1 frame(s)",
+            {"frames": 1, "edge_contacts": [{"frame": "frame-0000.png", "top": 12, "left": 0, "right": 0, "subject": 12, "residual": 0}]},
+        )
+
+    monkeypatch.setattr(frames_mod, "key_frames", fake_key_edge_refuse)
+    with pytest.raises(frames_mod.KeyingRefused):
+        frames_mod.run_frames(
+            clip, tmp_path / "out_edge", key="magenta", allow_edge_contact=False,
+            report_path=None, spill="small", reference=ref, check_framing=False,
+        )
+    stderr_edge = capsys.readouterr().err
+    assert "suggested --fix: inside-frame" in stderr_edge
+    rep_edge = json.loads((tmp_path / "out_edge" / "frames.report.json").read_text())
+    assert rep_edge["suggested_fixes"] == ["inside-frame"]

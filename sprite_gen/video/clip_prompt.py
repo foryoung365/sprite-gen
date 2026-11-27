@@ -35,6 +35,7 @@ from sprite_gen.gen.video import DEFAULT_MODEL  # the clip model the prompt is f
 from sprite_gen.video import batch as batch_mod
 from sprite_gen.video import body_plan as body_mod
 from sprite_gen.video import effect as effect_mod
+from sprite_gen.video import fix_clauses as fix_clauses_mod
 from sprite_gen.video import play as play_mod
 from sprite_gen.video.body_plan import Body
 from sprite_gen.util.console import utf8_streams
@@ -46,7 +47,7 @@ def plan_prompt(*, direction: str, state: str, facing: str = "right", character:
                 motion: str | None = None, model: str = DEFAULT_MODEL, last_frame: bool = True,
                 unpinned: bool = False, duration: int | None = None, key: str = GREEN,
                 handed: list[Handed] | None = None, body_plan: list[Body] | None = None, end_frame: Path | None = None,
-                play: str | None = None) -> dict[str, Any]:
+                play: str | None = None, fix: list[str] | None = None) -> dict[str, Any]:
     """The prompt `video-set` would send for (direction, state), and how its clip is to be cut. `handed`
     (`handedness.parse`) adds where each asymmetric item is in this view, as `video-set --handed` does;
     `body_plan` (`body_plan.parse_all`) what the subject stands on, as `video-set --body-plan` does; `play` the play
@@ -81,8 +82,9 @@ def plan_prompt(*, direction: str, state: str, facing: str = "right", character:
         warnings.append(f"{direction} {state} filmed without its end-frame pin: the {cut} is searched, not cut whole, and may not close")
     pins = wants_pin and last_frame
     parts = batch_mod.clip_prompt_parts(direction, state, character, facing=facing, motion=motion, pinned=pinned,
-                                        model=model, handed=handed, body_plan=body_plan, play=play)
+                                        model=model, handed=handed, body_plan=body_plan, play=play, fix=fix, key=key)
     prompt = parts.text
+    resolved_fix = fix_clauses_mod.resolve_fix_clauses(fix, state=state, facing=facing, key=key) if fix else None
     # the caller's own words (--character, --motion) against the engine's: a conflict is a warning
     warnings += [note["text"] for note in parts.notes if note["kind"] == prompt_parts.CONFLICT]
     cycle = batch_mod.cycle_for(state, direction, play, pinned=pins)
@@ -114,6 +116,7 @@ def plan_prompt(*, direction: str, state: str, facing: str = "right", character:
         },
         "warnings": warnings,
         **({"notes": parts.notes} if parts.notes else {}),
+        **({"fix": resolved_fix} if resolved_fix and resolved_fix["clauses"] else {}),
     }
     if lifetime:
         record["commands"]["frames"] = "sprite-gen video-frames --clip <dir>/clip.mp4 --out-dir <dir>/frames --alpha-mode brightness"
@@ -146,6 +149,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--no-last-frame", action="store_true", help="the clip source cannot pin an end frame (ZCRE's grok-imagine-video-1.5): states filmed pinned are refused")
     parser.add_argument("--unpinned", action="store_true", help="with --no-last-frame: film a pinned state without the pin, with a warning, instead of refusing it")
     parser.add_argument("--key", choices=START_STILL_KEYS, default=GREEN, help="the still's chroma key, for a front or back walk's mid-step redraw sentence (default green)")
+    parser.add_argument("--fix", action="append", default=[], metavar="CLAUSE_OR_TEXT", help="repeatable fix clause ID (e.g. camera-locked, inside-frame, feet-planted) or free-text retake instruction appended to the prompt")
     parser.add_argument("--json", action="store_true", help="print the whole record (prompt, duration, end-frame pin, loop cut, commands) instead of the prompt alone")
 
 
@@ -159,6 +163,7 @@ def run(**kwargs: object) -> int:
         key=str(kwargs.get("key") or GREEN),
         handed=handed_mod.parse_all(list(kwargs.get("handed") or [])) or None,  # type: ignore[arg-type]
         body_plan=body_mod.parse_all(list(kwargs.get("body_plan") or [])) or None,  # type: ignore[arg-type]
+        fix=list(kwargs.get("fix") or []) or None,  # type: ignore[arg-type]
     )
     for line in record["warnings"]:
         print(f"video-prompt: warning: {line}", file=sys.stderr)

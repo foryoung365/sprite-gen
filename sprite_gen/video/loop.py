@@ -65,6 +65,7 @@ from sprite_gen.video.interpolation_quality import ghost_screen
 from sprite_gen.video import evidence as evidence_mod
 from sprite_gen.video.frames import drop_specks
 from sprite_gen.util.console import utf8_streams
+from sprite_gen.video import colour_lock as colour_lock_mod
 from sprite_gen.video import retime as retime_mod
 from sprite_gen.video import wrap_blend as wrap_blend_mod
 
@@ -2424,6 +2425,11 @@ def _cut_loop(
     out_fps: float | None = None,
     air_retime: str | None = None,
     action_retime: str = retime_mod.ACTION_RETIME_DEFAULT,
+    hit_frame: int | None = None,
+    hit_stop_ms: int | None = None,
+    color_lock: str = colour_lock_mod.COLOR_LOCK_DEFAULT,
+    color_lock_strength: float = 1.0,
+    color_lock_master: Path | None = None,
     meters_per_px: float | None = None,
     contacts: list[str] | None = None,
 ) -> dict[str, Any]:
@@ -2473,6 +2479,14 @@ def _cut_loop(
         raise SystemExit(f"video-loop: unknown --fill-held {fill_held!r}; expected one of {', '.join(held_fill_mod.MODES)}")
     if action_retime not in retime_mod.ACTION_RETIME_MODES:
         raise SystemExit(f"video-loop: unknown --action-retime {action_retime!r}; expected one of {', '.join(retime_mod.ACTION_RETIME_MODES)}")
+    if hit_frame is not None and int(hit_frame) < 0:
+        raise SystemExit(f"video-loop: --hit-frame must be >= 0, got {hit_frame!r}")
+    if hit_stop_ms is not None and int(hit_stop_ms) < 0:
+        raise SystemExit(f"video-loop: --hit-stop-ms must be >= 0, got {hit_stop_ms!r}")
+    if color_lock not in colour_lock_mod.COLOR_LOCK_MODES:
+        raise SystemExit(f"video-loop: unknown --color-lock {color_lock!r}; expected one of {', '.join(colour_lock_mod.COLOR_LOCK_MODES)}")
+    if not (math.isfinite(color_lock_strength) and 0.0 <= float(color_lock_strength) <= 1.0):
+        raise SystemExit(f"video-loop: --color-lock-strength must be in 0..1, got {color_lock_strength!r}")
     if out_fps is not None:
         if not (math.isfinite(out_fps) and out_fps > fps):
             raise SystemExit(f"video-loop: --out-fps {out_fps:g} is not above the clip's {fps:g} fps: a cut is given at a higher "
@@ -3040,10 +3054,21 @@ def _cut_loop(
     # A cut played once carries its root motion (docs/video-pipeline.md, "Root motion"), read against the clip's floor.
     floor = root_motion_mod.clip_floor(files) if cycle["kind"] in root_motion_mod.KINDS else None
     action_retimed = None
-    frames, report_base["action_retime"] = retime_mod.retime_action(
-        frames, fps=fps, state=state or "", cycle_mode=cycle["kind"], mode=action_retime
-    )
+    local_hit_frame: int | None = None
+    if hit_frame is not None:
+        local_hit_frame = int(hit_frame) - i
+        if not (0 <= local_hit_frame < len(frames)):
+            raise SystemExit(f"video-loop: --hit-frame {hit_frame} lies outside the cut's source frames {i}..{i + len(frames) - 1}")
+    try:
+        frames, report_base["action_retime"] = retime_mod.retime_action(
+            frames, fps=fps, state=state or "", cycle_mode=cycle["kind"], mode=action_retime,
+            hit_frame=local_hit_frame, hit_stop_ms=hit_stop_ms,
+        )
+    except ValueError as exc:
+        raise SystemExit(f"video-loop: {exc}") from None
     if report_base["action_retime"]["applied"]:
+        if i > 0 and "hit_source_frame" in report_base["action_retime"]:
+            report_base["action_retime"]["hit_source_frame"] += i
         src_indices = report_base["action_retime"]["source_indices"]
         action_retimed = {"times": [float(k) for k in src_indices], "source_frames": list(src_indices)}
         upsampled = action_retimed["times"]
@@ -3113,6 +3138,31 @@ def _cut_loop(
             n_out = min(n_asked, len(frames))
     # The cut as delivered, read again: its poses over its cells.
     held_record.update(held_fill_mod.reading(held_fill_mod.same_steps(frames)))
+    if color_lock == "on":
+        is_cycle_lock = (
+            cycle["kind"] not in nonloop.KINDS
+            and (state or "").strip().lower()
+            not in ("attack", "jump", "death", "hurt", "cast", "guard", "victory", "defeat")
+        )
+        master_src: Any = color_lock_master if color_lock_master is not None else frames[0]
+        try:
+            mc = colour_lock_mod.master_colours(master_src)
+            cl_before = colour_lock_mod.measure(frames, mc, loop=is_cycle_lock)
+            frames, cl_stats = colour_lock_mod.lock_frames(
+                frames, mc, strength=float(color_lock_strength), loop=is_cycle_lock
+            )
+            cl_after = colour_lock_mod.measure(frames, mc, loop=is_cycle_lock)
+        except colour_lock_mod.ColourLockError as exc:
+            raise SystemExit(f"video-loop: --color-lock failed: {exc}") from None
+        report_base["color_lock"] = {
+            "applied": True,
+            "strength": float(color_lock_strength),
+            "loop": is_cycle_lock,
+            "master_colours": int(len(mc)),
+            "stats": cl_stats,
+            "before": cl_before,
+            "after": cl_after,
+        }
     C = len(frames)  # the cells delivered: the cut's frames, or more at --out-fps
     cycle_dir.mkdir(parents=True, exist_ok=True)
     for old in cycle_dir.glob("frame-*.png"):
@@ -3157,8 +3207,18 @@ def _cut_loop(
     if report_base.get("action_retime", {}).get("applied"):
         strip_meta["action_retime"] = {
             k: report_base["action_retime"][k]
-            for k in ("mode", "applied", "frames_before", "frames_after", "duration_before", "duration_after", "dead_hold_trimmed_s")
+            for k in (
+                "mode", "applied", "frames_before", "frames_after",
+                "duration_before", "duration_after", "duration_ms", "dead_hold_trimmed_s",
+                "hit_source", "hit_source_frame", "hit_output_frame", "hit_stop_ms", "events",
+            )
             if k in report_base["action_retime"]
+        }
+    if report_base.get("color_lock", {}).get("applied"):
+        strip_meta["color_lock"] = {
+            k: report_base["color_lock"][k]
+            for k in ("applied", "strength", "loop", "master_colours", "before", "after")
+            if k in report_base["color_lock"]
         }
     if cycle["kind"] in nonloop.KINDS:
         strip_meta.update(nonloop.metadata(cycle, strip_meta["sample_indices"] if upsampled is None else
@@ -3519,6 +3579,16 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                         help="compact long dead holds and excess idle padding in attack clips: auto (default, triggers on "
                              ">=3.2 s attack clips with a dead hold or long idle), punch (always compact detected attacks), "
                              "or off (keep as filmed)")
+    parser.add_argument("--hit-frame", type=int, default=None,
+                        help="explicit 0-based source frame index for the attack impact peak (overrides automatic peak detection)")
+    parser.add_argument("--hit-stop-ms", type=int, default=None,
+                        help="explicit hit-stop freeze duration in milliseconds at the attack impact frame (0 for no extra hold)")
+    parser.add_argument("--color-lock", choices=colour_lock_mod.COLOR_LOCK_MODES, default=colour_lock_mod.COLOR_LOCK_DEFAULT,
+                        help="OKLab height-banded chroma lock on the final cut frames: off (default) or on")
+    parser.add_argument("--color-lock-strength", type=float, default=1.0,
+                        help="OKLab colour-lock strength in 0..1 when --color-lock on (default 1.0)")
+    parser.add_argument("--color-lock-master", type=Path, default=None,
+                        help="optional keyed RGBA master still for --color-lock on (default: first frame of the cut)")
     parser.add_argument("--meters-per-px", type=float, default=None,
                         help="the metres a pixel of the clip as filmed holds (the standing height in metres over the strip's "
                              "`body_src_h`): the root motion in metres too (`root_m`, each apex's `apex_m`), and --air-retime's "
@@ -3552,6 +3622,10 @@ def run(**kwargs: object) -> int:
         body_turn=str(kwargs.get("body_turn") or "warn"),
         fill_held=str(kwargs.get("fill_held") or "auto"), out_fps=kwargs.get("out_fps"),  # type: ignore[arg-type]
         air_retime=kwargs.get("air_retime"), action_retime=str(kwargs.get("action_retime") or retime_mod.ACTION_RETIME_DEFAULT),
+        hit_frame=kwargs.get("hit_frame"), hit_stop_ms=kwargs.get("hit_stop_ms"),  # type: ignore[arg-type]
+        color_lock=str(kwargs.get("color_lock") or colour_lock_mod.COLOR_LOCK_DEFAULT),
+        color_lock_strength=float(kwargs["color_lock_strength"] if kwargs.get("color_lock_strength") is not None else 1.0),
+        color_lock_master=kwargs.get("color_lock_master"),  # type: ignore[arg-type]
         meters_per_px=kwargs.get("meters_per_px"),  # type: ignore[arg-type]
         contacts=kwargs.get("contact"),  # type: ignore[arg-type]
     )
@@ -3637,8 +3711,12 @@ def run(**kwargs: object) -> int:
                                  if k in payload["air_retime"]}
     if "action_retime" in payload:
         summary["action_retime"] = {k: payload["action_retime"][k]
-                                    for k in ("mode", "applied", "why", "frames_before", "frames_after", "duration_before", "duration_after", "dead_hold_trimmed_s")
+                                    for k in ("mode", "applied", "why", "frames_before", "frames_after", "duration_before", "duration_after", "duration_ms", "dead_hold_trimmed_s", "hit_source", "hit_source_frame", "hit_output_frame", "hit_stop_ms", "events")
                                     if k in payload["action_retime"]}
+    if "color_lock" in payload:
+        summary["color_lock"] = {k: payload["color_lock"][k]
+                                 for k in ("applied", "strength", "loop", "before", "after")
+                                 if k in payload["color_lock"]}
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0
 

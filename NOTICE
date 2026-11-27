@@ -52,3 +52,12 @@ rife_*_tta shaders), Copyright (c) 2020 nihui, MIT License.
 MIT License, its LICENSE kept in the install: the binary, which sprite-gen runs
 as an external tool, and its rife-v4.25 and rife-v4.6 models (Practical-RIFE's
 weights, MIT, as above), which both backends read. sprite-gen ships none of them.
+
+The OKLab height-banded colour lock (`sprite_gen/video/colour_lock.py`, CLI verb
+`video-color-lock` and `--color-lock`), the attack retime event timeline &
+monotonic recovery checks (`sprite_gen/video/retime.py`), and the failure-gate
+retake fix clause library (`sprite_gen/video/fix_clauses.py`) are adapted from
+agent-sprite-forge (https://github.com/0x0funky/agent-sprite-forge, commit
+25203d03900b46b444bdd72a75768c33d1895ad6, `skills/video2dsprite/scripts/colour_lock.py`,
+`shared/forge_palette.py`, `skills/video2dsprite/scripts/retime.py`, and
+`skills/video2dsprite/references/motion-prompts.md`), MIT License.

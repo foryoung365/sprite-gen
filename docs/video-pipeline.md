@@ -1157,6 +1157,19 @@ sprite-gen video-stop --frames-dir run/frames/keyed --loop run/loop/run.strip.js
 
 The outputs are `<name>.strip.png`, `<name>.strip.json`, `<name>.gif` (plays once), `<name>.webp` (plays once), and `<name>.stop.report.json` (or `--report PATH`).
 
+## 9. OKLab banded colour lock, attack event timeline & retake `--fix` clauses
+
+- **OKLab colour lock (`video-color-lock`, `video-loop --color-lock`, `video-set --color-lock`)**: learns up to 12 OKLab colour centres in each of 5 overlapping height bands (feet to head) from a keyed RGBA master still and corrects OKLab chroma `(a, b)` only (never lightness `L` or alpha), with local same-colour drift removal, soft snap, and still-pixel temporal chroma smoothing (cycles warm up from the last frame). Standalone usage:
+
+  ```bash
+  sprite-gen video-color-lock --frames-dir frames/keyed --out-dir frames/locked --strength 1.0
+  sprite-gen video-color-lock --frames-dir frames/keyed --master master.png --measure-only --loop
+  ```
+
+  In `video-loop` and `video-set`, `--color-lock` defaults to `off`; pass `--color-lock on` (and optional `--color-lock-strength`, `--color-lock-master` on `video-loop`) to lock the final cut frames and record before/after `hue_flips_per_pair`, `region_spread_mean`, `region_spread_max`, and `foreign_share` in `loop.report.json` and `strip.json`.
+- **Attack retiming event timeline (`video-loop --action-retime`, `--hit-frame`, `--hit-stop-ms`)**: when attack retiming runs, `action_retime` in `loop.report.json` and `strip.json` includes `hit_source` (`"explicit"` or `"auto"`), `hit_source_frame`, `hit_output_frame`, `hit_stop_ms`, `duration_ms`, and `events` (`in`, `hit`, `cancel`, `end`, each with `frame`, `at_ms`, `tick_60hz`), with a monotonic forward-recovery assertion. Pass `--hit-frame <0-based source frame>` (`video-loop`) to pin non-thrust impacts and `--hit-stop-ms <ms>` (`video-loop` / `video-set`; `0` disables extra hit-stop frames).
+- **Retake fix clauses (`--fix`)**: when `video-frames` refuses a clip on `framing_guard` or `edge_contact` / keying, `frames.report.json` includes `suggested_fixes` (and prints `suggested --fix: ...` on stderr). Pass repeatable `--fix <clause-id-or-text>` to `video-prompt` or `video-set` to append verified clauses (`camera-locked`, `inside-frame`, `keep-colours`, `never-turn`, etc.) without altering baseline prompts when omitted. For `walk`, `run`, and `jump`, `feet-planted` is automatically rewritten to `feet-ground-line`.
+
 ## Related
 
 - [docs/README.md](README.md) — documentation index

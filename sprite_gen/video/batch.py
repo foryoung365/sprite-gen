@@ -44,6 +44,8 @@ from sprite_gen.video import root_motion as root_motion_mod
 from sprite_gen.video import align as align_mod
 from sprite_gen.video import body_plan as body_mod
 from sprite_gen.video.body_plan import Body
+from sprite_gen.video import colour_lock as colour_lock_mod
+from sprite_gen.video import fix_clauses as fix_clauses_mod
 from sprite_gen.video import rife as rife_mod
 from sprite_gen.video import retime as retime_mod
 from sprite_gen.video import effect, nonloop
@@ -465,16 +467,18 @@ def _staggered_start(gap: float) -> None:
 
 def build_prompt(direction: str, state: str, character: str | None, facing: str = "right", motion: str | None = None,
                  pinned: bool | None = None, model: str | None = None, handed: list[Handed] | None = None,
-                 body_plan: list[Body] | None = None, play: str | None = None) -> str:
+                 body_plan: list[Body] | None = None, play: str | None = None,
+                 fix: list[str] | tuple[str, ...] | None = None, key: str = "magenta") -> str:
     """The clip prompt for one (direction, state): `clip_prompt_parts(...).text`."""
     return clip_prompt_parts(direction, state, character, facing=facing, motion=motion, pinned=pinned, model=model,
-                             handed=handed, body_plan=body_plan, play=play).text
+                             handed=handed, body_plan=body_plan, play=play, fix=fix, key=key).text
 
 
 def clip_prompt_parts(direction: str, state: str, character: str | None, facing: str = "right", motion: str | None = None,
                       pinned: bool | None = None, model: str | None = None,
                       handed: list[Handed] | None = None, body_plan: list[Body] | None = None,
-                      play: str | None = None) -> prompt_parts.Prompt:
+                      play: str | None = None, fix: list[str] | tuple[str, ...] | None = None,
+                      key: str = "magenta") -> prompt_parts.Prompt:
     """The clip prompt for one (direction, state), as its pieces (`prompt_parts.Prompt`: `.text` is the
     prompt, `.notes` what the caller's own words say against or again after the engine's).
 
@@ -514,7 +518,14 @@ def clip_prompt_parts(direction: str, state: str, character: str | None, facing:
     mode = play_mod.resolve(state, play)
     if mode == play_mod.LIFETIME:
         from . import effect
-        return prompt_parts.Prompt(effect.prompt(character, motion), caller=f"{character or ''} {motion or ''}", sep=" ")
+        parts = prompt_parts.Prompt(effect.prompt(character, motion), caller=f"{character or ''} {motion or ''}", sep=" ")
+        if fix:
+            resolved_fix = fix_clauses_mod.resolve_fix_clauses(fix, state=state, facing=facing, key=key)
+            if resolved_fix["text"]:
+                parts.add("fix", resolved_fix["text"])
+            for rw in resolved_fix["rewritten"]:
+                parts.notes.append({"kind": "note", "about": "fix", "text": rw["reason"]})
+        return parts
     view = VIEW_TEXT.get(direction, f"seen from the {direction}").format(facing=facing)
     turned = facing if direction in handed_mod.LATERAL_VIEWS else None
     if mode == play_mod.ONCE_HOLD:
@@ -565,6 +576,12 @@ def clip_prompt_parts(direction: str, state: str, character: str | None, facing:
     parts.note(facing=turned or prompt_parts.NO_TURN)
     if handed:
         parts.add("handed", handed_mod.text(handed, direction, turned, clip=True, gait=state in GAIT_STATES), handed=handed)
+    if fix:
+        resolved_fix = fix_clauses_mod.resolve_fix_clauses(fix, state=state, facing=facing, key=key)
+        if resolved_fix["text"]:
+            parts.add("fix", resolved_fix["text"])
+        for rw in resolved_fix["rewritten"]:
+            parts.notes.append({"kind": "note", "about": "fix", "text": rw["reason"]})
     return parts
 
 
@@ -751,6 +768,10 @@ def run_item(
     out_fps: float | None = None,
     air_retime: str | None = None,
     action_retime: str = retime_mod.ACTION_RETIME_DEFAULT,
+    hit_stop_ms: int | None = None,
+    color_lock: str = colour_lock_mod.COLOR_LOCK_DEFAULT,
+    color_lock_strength: float = 1.0,
+    fix: list[str] | None = None,
     meters_per_px: float | None = None,
 ) -> dict[str, Any]:
     """One (direction, state) item, canvas to loop. `play` is the request's play mode for it (`play.MODES`; None, the
@@ -759,6 +780,12 @@ def run_item(
     mode = play_mod.resolve(state, play, prog="video-set")
     if action_retime not in retime_mod.ACTION_RETIME_MODES:
         raise SystemExit(f"video-set: --action-retime must be one of {', '.join(retime_mod.ACTION_RETIME_MODES)}")
+    if hit_stop_ms is not None and int(hit_stop_ms) < 0:
+        raise SystemExit(f"video-set: --hit-stop-ms must be >= 0, got {hit_stop_ms!r}")
+    if color_lock not in colour_lock_mod.COLOR_LOCK_MODES:
+        raise SystemExit(f"video-set: --color-lock must be one of {', '.join(colour_lock_mod.COLOR_LOCK_MODES)}")
+    if not (0.0 <= float(color_lock_strength) <= 1.0):
+        raise SystemExit(f"video-set: --color-lock-strength must be in 0..1, got {color_lock_strength!r}")
     if end_frame is not None and mode != play_mod.ONCE_HOLD:
         raise SystemExit("video-set: --end-frame requires a once-hold item (a non-loop state, or --play once-hold)")
     if mode == play_mod.ONCE_HOLD and (fit == "tight" or anchor not in (None, "none")):
@@ -784,11 +811,16 @@ def run_item(
     if direction in handed_mod.LATERAL_VIEWS:
         result["turned"] = facing
     try:
+        prompt_key = key if key in ("green", "magenta", "white") else ("magenta" if uses_magi2(pins=pins, end_frame=end_frame) else "green")
         parts = clip_prompt_parts(direction, state, character, facing=facing, motion=motion, handed=handed,
-                                  body_plan=body_plan, play=play)
+                                  body_plan=body_plan, play=play, fix=fix, key=prompt_key)
         prompt = parts.text
         if parts.notes:
             result["prompt_notes"] = parts.notes
+        if fix:
+            resolved_fix = fix_clauses_mod.resolve_fix_clauses(fix, state=state, facing=facing, key=prompt_key)
+            if resolved_fix["clauses"]:
+                result["fix"] = resolved_fix
         needs = handed_mod.first_frame_needs(handed or [], direction, facing if direction in handed_mod.LATERAL_VIEWS else None,
                                              gait=state in GAIT_STATES)
         if needs:
@@ -914,7 +946,9 @@ def run_item(
         lp = loop_mod.run_loop(Path(fr["keyed_dir"]), item_dir / "loop", fps=float(fr["fps"]), state=state, min_len=None, max_len=None, n_out=None, seam_max=loop_mod.SEAM_RATIO_MAX, name=item, report_path=item_dir / "loop.report.json", anchor=anchor_for(state, cut, anchor), body_height=body_height,
                                cycle_mode=cut,
                                facing=facing if direction in handed_mod.LATERAL_VIEWS else "right", view=direction,
-                               fill_held=fill_held, out_fps=out_fps, air_retime=air_retime, action_retime=action_retime, meters_per_px=meters_per_px)
+                               fill_held=fill_held, out_fps=out_fps, air_retime=air_retime, action_retime=action_retime,
+                               hit_stop_ms=hit_stop_ms, color_lock=color_lock, color_lock_strength=color_lock_strength,
+                               meters_per_px=meters_per_px)
         result["loop"] = {"kind": lp["cycle"].get("kind", "periodic"), "cycle": lp["cycle"]["length"], "period": lp["cycle"]["period_global"], "cycle_ratio": round(lp["cycle"]["ratio"], 3), "seam_ratio": lp["resampled_seam_ratio"], "n_out": lp["n_out"], "drift_px": lp["strip"].get("drift_px", 0), "gif": lp["gif"]["file"], "webp": lp["webp"]["file"], "strip": lp["strip"]["path"]}
         result["loop"]["review_recommended"] = lp["cycle"].get("review_recommended", False)
         result["loop"]["half_period_guard"] = lp["cycle"].get("half_period_guard")
@@ -956,8 +990,12 @@ def run_item(
                                             if k in lp["air_retime"]}
         if "action_retime" in lp:
             result["loop"]["action_retime"] = {k: lp["action_retime"][k]
-                                               for k in ("mode", "applied", "why", "frames_before", "frames_after", "duration_before", "duration_after", "dead_hold_trimmed_s")
+                                               for k in ("mode", "applied", "why", "frames_before", "frames_after", "duration_before", "duration_after", "duration_ms", "dead_hold_trimmed_s", "hit_source", "hit_source_frame", "hit_output_frame", "hit_stop_ms", "events")
                                                if k in lp["action_retime"]}
+        if "color_lock" in lp:
+            result["loop"]["color_lock"] = {k: lp["color_lock"][k]
+                                            for k in ("applied", "strength", "loop", "before", "after")
+                                            if k in lp["color_lock"]}
         if "rife" in (lp.get("jump_repair") or {}):
             # cut as filmed for want of RIFE: the set report lists it under `warnings` (a wrap the seam bridge read carries
             # its `seam`, not the flow's `off_max_before`)
@@ -1226,6 +1264,10 @@ def run_set(
     out_fps: float | None = None,
     air_retime: str | None = None,
     action_retime: str = retime_mod.ACTION_RETIME_DEFAULT,
+    hit_stop_ms: int | None = None,
+    color_lock: str = colour_lock_mod.COLOR_LOCK_DEFAULT,
+    color_lock_strength: float = 1.0,
+    fix: list[str] | None = None,
     meters_per_px: float | None = None,
 ) -> dict[str, Any]:
     """`bases` maps a view to its still; `facing` is right, left or `right,left` (`facings_of`), and a view filmed
@@ -1240,6 +1282,12 @@ def run_set(
         raise SystemExit(f"video-set: --align-cycles must be one of {', '.join(ALIGN_MODES)}")
     if action_retime not in retime_mod.ACTION_RETIME_MODES:
         raise SystemExit(f"video-set: --action-retime must be one of {', '.join(retime_mod.ACTION_RETIME_MODES)}")
+    if hit_stop_ms is not None and int(hit_stop_ms) < 0:
+        raise SystemExit(f"video-set: --hit-stop-ms must be >= 0, got {hit_stop_ms!r}")
+    if color_lock not in colour_lock_mod.COLOR_LOCK_MODES:
+        raise SystemExit(f"video-set: --color-lock must be one of {', '.join(colour_lock_mod.COLOR_LOCK_MODES)}")
+    if not (0.0 <= float(color_lock_strength) <= 1.0):
+        raise SystemExit(f"video-set: --color-lock-strength must be in 0..1, got {color_lock_strength!r}")
     if anchor == "motion-auto" and any(not loop_mod.profile_for(state).gait for state in states):
         raise SystemExit("video-set: --anchor motion-auto requires walk/run states")
     if anchor == "motion":
@@ -1302,7 +1350,7 @@ def run_set(
         return prepare_side
 
     with ThreadPoolExecutor(max_workers=max(1, concurrency)) as ex:
-        futures = {ex.submit(run_item, item=i, direction=d, state=s, base=b, root=root, character=character, duration=duration, resolution=resolution, key=key, force=force, gap=gap, video_runner=video_runner, shape=shape, anchor=anchor, spill=spill, facing=f, facing_fix=facing_fix, prepare_side=side_preparer(f), body_height=body_height, fit=fit, decontam=decontam, walk_start=walk_start, redraw_runner=redraw_runner, still_provider=still_provider, handed=handed, body_plan=body_plan, **({"end_frame": end_frames[i]} if end_frames and i in end_frames else {}), **({"play": plays[i]} if i in plays else {}), **({"motion": motions[i]} if i in motions else {}), fill_held=fill_held, out_fps=out_fps, air_retime=air_retime, action_retime=action_retime, meters_per_px=meters_per_px): i for i, d, s, f, b in items}
+        futures = {ex.submit(run_item, item=i, direction=d, state=s, base=b, root=root, character=character, duration=duration, resolution=resolution, key=key, force=force, gap=gap, video_runner=video_runner, shape=shape, anchor=anchor, spill=spill, facing=f, facing_fix=facing_fix, prepare_side=side_preparer(f), body_height=body_height, fit=fit, decontam=decontam, walk_start=walk_start, redraw_runner=redraw_runner, still_provider=still_provider, handed=handed, body_plan=body_plan, **({"end_frame": end_frames[i]} if end_frames and i in end_frames else {}), **({"play": plays[i]} if i in plays else {}), **({"motion": motions[i]} if i in motions else {}), fill_held=fill_held, out_fps=out_fps, air_retime=air_retime, action_retime=action_retime, hit_stop_ms=hit_stop_ms, color_lock=color_lock, color_lock_strength=color_lock_strength, fix=fix, meters_per_px=meters_per_px): i for i, d, s, f, b in items}
         for fut in as_completed(futures):
             r = fut.result()
             results.append(r)
@@ -1341,7 +1389,7 @@ def run_set(
     # with that question, the way to answer it named as this verb's own flag, once every other item has ended.
     asked = next((codex_unavailable_question(r["asked"]["cause"], r["asked"]["reason"], flag="--still-provider")
                   for r in results if r.get("asked")), None)
-    payload = {"kind": "sprite-gen-video-set-report", "root": str(root), "states": states, "facing": facing, "facing_fix": facing_fix, "directions": list(bases), **({"handed": [vars(h) for h in handed]} if handed else {}), **({"body_plan": [vars(b) for b in body_plan]} if body_plan else {}), **({"play": play} if play else {}), **({"motion": motion} if motion else {}), "body_height": body_height, "ok": sum(1 for r in results if r.get("ok")), "failed": failed, "warnings": warnings, **({"asked": asked} if asked else {}), "items": results, "cycle_align": aligned}
+    payload = {"kind": "sprite-gen-video-set-report", "root": str(root), "states": states, "facing": facing, "facing_fix": facing_fix, "directions": list(bases), **({"handed": [vars(h) for h in handed]} if handed else {}), **({"body_plan": [vars(b) for b in body_plan]} if body_plan else {}), **({"play": play} if play else {}), **({"motion": motion} if motion else {}), **({"fix": list(fix)} if fix else {}), "body_height": body_height, "ok": sum(1 for r in results if r.get("ok")), "failed": failed, "warnings": warnings, **({"asked": asked} if asked else {}), "items": results, "cycle_align": aligned}
     atomic_write_text(root / "set.report.json", json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
     print(table)
     if asked:
@@ -1468,6 +1516,14 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--action-retime", choices=retime_mod.ACTION_RETIME_MODES, default=retime_mod.ACTION_RETIME_DEFAULT,
                         help="compact long dead holds and idle padding in attack clips (video-loop --action-retime): "
                              "auto (default), punch, or off")
+    parser.add_argument("--hit-stop-ms", type=int, default=None,
+                        help="explicit hit-stop duration in milliseconds for retimed attack clips (video-loop --hit-stop-ms)")
+    parser.add_argument("--color-lock", choices=colour_lock_mod.COLOR_LOCK_MODES, default=colour_lock_mod.COLOR_LOCK_DEFAULT,
+                        help="OKLab height-banded chroma lock on each cut's final frames (video-loop --color-lock): off (default) or on")
+    parser.add_argument("--color-lock-strength", type=float, default=1.0,
+                        help="OKLab colour-lock strength in 0..1 when --color-lock on (default 1.0)")
+    parser.add_argument("--fix", action="append", default=[], metavar="CLAUSE_OR_TEXT",
+                        help="repeatable retake fix clause ID (e.g. camera-locked, inside-frame, feet-planted) or free-text sentence appended to every clip prompt")
     parser.add_argument("--meters-per-px", type=float, default=None,
                         help="the metres a pixel of the clips as filmed holds (video-loop --meters-per-px): the root motion in "
                              "metres, and --air-retime's gravity and speed")
@@ -1499,6 +1555,10 @@ def run(**kwargs: object) -> int:
         motion=_parse_keyed(list(kwargs.get("motion") or []), "--motion") or None,  # type: ignore[arg-type]
         fill_held=str(kwargs.get("fill_held") or "auto"), out_fps=kwargs.get("out_fps"),  # type: ignore[arg-type]
         air_retime=kwargs.get("air_retime"), action_retime=str(kwargs.get("action_retime") or retime_mod.ACTION_RETIME_DEFAULT),
+        hit_stop_ms=kwargs.get("hit_stop_ms"),  # type: ignore[arg-type]
+        color_lock=str(kwargs.get("color_lock") or colour_lock_mod.COLOR_LOCK_DEFAULT),
+        color_lock_strength=float(kwargs["color_lock_strength"] if kwargs.get("color_lock_strength") is not None else 1.0),
+        fix=list(kwargs.get("fix") or []) or None,  # type: ignore[arg-type]
         meters_per_px=kwargs.get("meters_per_px"),  # type: ignore[arg-type]
     )
     return 0 if not payload["failed"] else 1

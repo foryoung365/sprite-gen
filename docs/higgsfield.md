@@ -75,9 +75,17 @@ Prices measured 2026-10-30, at 1k: `low` 0.25, `medium` 0.5, `high` 1.5 credits;
     full-clip keying (`video-frames`), frame 0 is compared against the reference canvas; abnormal zoom/crop drift
     (e.g. >15% height change or new bottom clipping) is warned in `video` and refused early in `video-frames`
     (`--allow-reframe` skips the gate).
-  - **Attack hold compaction (`video-loop` / `video-set`)**: `--action-retime auto` (default) trims dead mid-action holds
-    and excess idle padding on `>= 3.2` s pinned/one-shot attack clips into a crisp ~0.8–1.1 s loop (`punch` always compacts;
-    `off` keeps the clip as filmed).
+  - **Attack hold compaction & event timeline (`video-loop` / `video-set`)**: `--action-retime auto` (default) trims
+    dead mid-action holds and excess idle padding on `>= 3.2` s pinned/one-shot attack clips into a crisp ~0.8–1.1 s
+    sequence (`punch` always compacts; `off` keeps the clip as filmed), emitting structured `events` (`in`, `hit`,
+    `cancel`, `end` with `frame`, `at_ms`, `tick_60hz`) and monotonic forward recovery. Override the auto peak or
+    hit-stop with `--hit-frame <N>` (`video-loop`) and `--hit-stop-ms <MS>` (`video-loop` / `video-set`).
+  - **OKLab banded colour lock (`video-color-lock` / `video-loop --color-lock` / `video-set --color-lock`)**:
+    opt-in (`--color-lock on`, default `off`, `--color-lock-strength 0..1`) removes inter-frame chroma drift and key
+    tint across five height bands while keeping OKLab lightness and alpha untouched.
+  - **Retake fix clauses (`--fix`)**: `video-frames` writes `suggested_fixes` on framing/edge refusals; pass repeatable
+    `--fix <clause-id-or-text>` to `video-prompt` or `video-set` (gait states `walk`/`run`/`jump` automatically rewrite
+    `feet-planted` to `feet-ground-line`).
   - To switch back to Wan 3.0 for pinned clips, pass `--model wan3_0` on `sprite-gen video` or set
     `SPRITE_GEN_HIGGSFIELD_VIDEO_MODEL=wan3_0` for `video-set` (`wan3_0` keeps `aspect_ratio=auto`, `generate_audio=false`,
     and 2–30 s duration at 480p/720p/1080p).

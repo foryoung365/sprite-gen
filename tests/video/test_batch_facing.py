@@ -206,3 +206,61 @@ def test_uses_magi2_respects_provider_and_model_env(monkeypatch):
 
     monkeypatch.setenv(higgsfield_video.PROVIDER_ENV, "grok")
     assert batch.uses_magi2(pins=True) is False
+
+
+def test_batch_threads_fix_clauses_hit_stop_and_color_lock(tmp_path, offline, monkeypatch):
+    seen_prompts: list[str] = []
+    seen_loop: list[dict] = []
+
+    def fake_video(image, prompt, out, report, **kw):
+        seen_prompts.append(prompt)
+        out.write_bytes(b"test-video")
+        report.write_text(json.dumps({"prompt": prompt}))
+        return 0
+
+    def fake_loop(*a, **kw):
+        seen_loop.append(kw)
+        return {
+            "cycle": {"length": 10, "period_global": 10, "ratio": 0.2},
+            "resampled_seam_ratio": 0.2,
+            "held_fill": {"cells": 10, "poses": 10, "held_runs": [], "made": [], "before": {"cells": 10, "poses": 10, "held_runs": []}},
+            "n_out": 10, "gif": {"file": "loop.gif"}, "webp": {"file": "loop.webp"}, "strip": {"path": "strip.png"},
+        }
+
+    monkeypatch.setattr(batch.loop_mod, "run_loop", fake_loop)
+
+    res = batch.run_set(
+        bases={"side": FIXTURE}, states=["walk", "attack"], root=tmp_path / "set_fix",
+        character=None, duration=3, resolution="720p", key="magenta", concurrency=1,
+        force=False, gap=0, facing="left", video_runner=fake_video,
+        fix=["camera-locked", "feet-planted"], hit_stop_ms=120, color_lock="on", color_lock_strength=0.75,
+    )
+    assert res["ok"] == 2
+    assert res["fix"] == ["camera-locked", "feet-planted"]
+    walk_item = next(it for it in res["items"] if it["state"] == "walk")
+    atk_item = next(it for it in res["items"] if it["state"] == "attack")
+
+    # walk automatically rewrites feet-planted -> feet-ground-line; attack keeps feet-planted
+    assert walk_item["fix"]["ids"] == ["camera-locked", "feet-ground-line"]
+    assert walk_item["fix"]["rewritten"][0]["to"] == "feet-ground-line"
+    assert atk_item["fix"]["ids"] == ["camera-locked", "feet-planted"]
+    assert atk_item["fix"]["rewritten"] == []
+    assert any("Every step lands on the same ground line" in p and "Both feet stay planted" not in p for p in seen_prompts)
+    assert any("Both feet stay planted" in p for p in seen_prompts)
+
+    # hit_stop_ms and color_lock options threaded to loop_mod.run_loop
+    assert all(kw["hit_stop_ms"] == 120 for kw in seen_loop)
+    assert all(kw["color_lock"] == "on" and kw["color_lock_strength"] == 0.75 for kw in seen_loop)
+
+    # CLI argument wiring check
+    cli_seen: list[dict] = []
+    monkeypatch.setattr(batch, "run_set", lambda **kw: (cli_seen.append(kw), {"failed": []})[1])
+    assert batch.main([
+        "--base", f"side={FIXTURE}", "--states", "attack", "--out-dir", str(tmp_path / "cli_out"),
+        "--fix", "camera-locked", "--fix", "inside-frame",
+        "--hit-stop-ms", "100", "--color-lock", "on", "--color-lock-strength", "0.85",
+    ]) == 0
+    assert cli_seen[0]["fix"] == ["camera-locked", "inside-frame"]
+    assert cli_seen[0]["hit_stop_ms"] == 100
+    assert cli_seen[0]["color_lock"] == "on"
+    assert cli_seen[0]["color_lock_strength"] == 0.85
