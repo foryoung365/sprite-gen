@@ -8,6 +8,7 @@ and icons. A version 1 request is packed exactly as before.
 from __future__ import annotations
 
 import argparse
+import copy
 from io import BytesIO
 import json
 import math
@@ -24,7 +25,7 @@ from sprite_gen.audio.playback import player as audio_player
 from sprite_gen.frames.ui_kit import (REPORT_KIND as UI_KIT_KIND, SIDES, STRETCHES, content_rect, element_path,
                                      measure_insets)
 from sprite_gen._deps import np
-from sprite_gen.spec.assets import finite, load_asset, load_asset_states
+from sprite_gen.spec.assets import MAX_SOURCE_PIXELS, finite, load_asset, load_asset_states, resolve_max_source_pixels
 from sprite_gen.spec.runio import inside_folder, same_folder
 from sprite_gen.util.resample import resize_cell
 from sprite_gen.util.console import utf8_streams
@@ -34,6 +35,7 @@ MAX_BYTES = 50_000_000
 SCENE_SECTIONS = ("images", "tiles", "ui")
 # A "base" footprint counts pixels at least this opaque (docs/game-pack.md "Version 2 request").
 FOOTPRINT_ALPHA = 128
+LOSSY_WEBP_PRESETS = {"q90": (90, 95), "q80": (80, 90)}
 
 
 def _integer(value, name, *, maximum=None):
@@ -41,6 +43,87 @@ def _integer(value, name, *, maximum=None):
     if number != int(number) or maximum is not None and number > maximum:
         raise ValueError(f"{name} must be an integer between 1 and {maximum or 'its limit'}")
     return int(number)
+
+
+def _bool_flag(value, name):
+    if type(value) is not bool:
+        raise ValueError(f"{name} must be a bool")
+    return value
+
+
+def _resolve_max_bytes(max_bytes, *, allow_large):
+    if not allow_large:
+        return _integer(max_bytes, "max bytes", maximum=MAX_BYTES)
+    number = finite(max_bytes, "max bytes")
+    if number != int(number) or number < 0:
+        raise ValueError("max bytes must be a non-negative integer")
+    limit = int(number)
+    return None if limit == 0 else limit
+
+
+def _resolve_webp_options(webp_quality, webp_alpha_quality):
+    alpha_quality = _integer(webp_alpha_quality, "webp alpha quality", maximum=100)
+    if isinstance(webp_quality, str):
+        cleaned = webp_quality.strip().lower()
+        if cleaned == "lossless":
+            return {"lossless": True, "exact": True, "method": 6}
+        if re.fullmatch(r"[0-9]+", cleaned):
+            quality = _integer(int(cleaned), "webp quality", maximum=100)
+            return {"lossless": False, "quality": quality, "alpha_quality": alpha_quality, "method": 6}
+        raise ValueError("webp quality must be 'lossless' or an integer between 1 and 100")
+    quality = _integer(webp_quality, "webp quality", maximum=100)
+    return {"lossless": False, "quality": quality, "alpha_quality": alpha_quality, "method": 6}
+
+
+def _resolve_variant_quality(variant):
+    if variant in LOSSY_WEBP_PRESETS:
+        return LOSSY_WEBP_PRESETS[variant]
+    match = re.fullmatch(r"q([0-9]+)", variant)
+    if match:
+        quality = int(match.group(1))
+        if 1 <= quality <= 100:
+            return quality, min(98, quality + 10)
+    raise ValueError(f"unsupported webp variant: {variant!r}")
+
+
+def _parse_webp_variants(webp_variants, *, is_lossless):
+    if webp_variants is None:
+        return ()
+    if isinstance(webp_variants, str):
+        if not webp_variants.strip():
+            raise ValueError("webp variants must not be empty")
+        raw_items = [part.strip().lower() for part in webp_variants.split(",")]
+        if any(not part for part in raw_items):
+            raise ValueError("webp variants must not contain empty entries")
+    elif isinstance(webp_variants, (list, tuple)):
+        if not webp_variants:
+            raise ValueError("webp variants must not be empty")
+        raw_items = []
+        for item in webp_variants:
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError("webp variants must contain non-empty strings")
+            raw_items.append(item.strip().lower())
+    else:
+        raise ValueError("webp variants must be a comma-separated string or sequence of variant names")
+    parsed = []
+    for item in raw_items:
+        if item == "lossless":
+            if not is_lossless:
+                raise ValueError("webp-variants 'lossless' requires --webp-quality lossless")
+        else:
+            _resolve_variant_quality(item)
+        if item not in parsed:
+            parsed.append(item)
+    return tuple(parsed)
+
+
+def _check_budget(total, max_bytes, *, suffix=""):
+    if max_bytes is None or total <= max_bytes:
+        return
+    if max_bytes == MAX_BYTES:
+        raise ValueError(f"game pack exceeds {max_bytes} bytes (50 MB maximum{suffix})")
+    detail = f" ({suffix.lstrip(', ')})" if suffix else ""
+    raise ValueError(f"game pack exceeds {max_bytes} bytes{detail}")
 
 
 def _name(value):
@@ -108,7 +191,7 @@ def _cell(image, size, sampling):
     return image.resize(size, Image.Resampling.NEAREST) if sampling == "nearest" else resize_cell(image, size)
 
 
-def _prepare(request, base, page_size):
+def _prepare(request, base, page_size, *, max_source_pixels=None):
     entries = request.get("assets", [])
     if not isinstance(entries, list):
         raise ValueError("assets must be a list")
@@ -122,7 +205,13 @@ def _prepare(request, base, page_size):
         ids.add(asset_id)
         if not isinstance(entry.get("source"), str) or not entry["source"]:
             raise ValueError("each asset requires a source path")
-        sequences = load_asset_states(base / entry["source"], state=entry.get("state"), fps=entry.get("fps"), anchor=entry.get("anchor"))
+        sequences = load_asset_states(
+            base / entry["source"],
+            state=entry.get("state"),
+            fps=entry.get("fps"),
+            anchor=entry.get("anchor"),
+            max_source_pixels=max_source_pixels,
+        )
         if len(sequences) > 1 and "direction" in entry:
             raise ValueError("direction override requires one animation; select a source state")
         for state, sequence in sequences.items():
@@ -163,8 +252,8 @@ def _entries(owner, key, allowed):
     return entries
 
 
-def _still(path, key, anchor=None):
-    sequence = load_asset(path, anchor=anchor)
+def _still(path, key, anchor=None, *, max_source_pixels=None):
+    sequence = load_asset(path, anchor=anchor, max_source_pixels=max_source_pixels)
     if len(sequence.frames) != 1:
         raise ValueError(f"{key}: needs exactly one frame, the source has {len(sequence.frames)}")
     return sequence
@@ -258,7 +347,7 @@ def _fill(name, record, image, frame, page_size):
     return entry, (key, _ends_kept(cell, insets, size[0]), (size[0] / 2, size[1] / 2))
 
 
-def _ui_kit(path, scale, page_size):
+def _ui_kit(path, scale, page_size, *, max_source_pixels=None):
     """Nine-slice entries and atlas frames from a `ui-kit` report (docs/ui-kit.md "Report")."""
     report = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(report, dict) or report.get("kind") != UI_KIT_KIND or report.get("version") != 1:
@@ -278,7 +367,7 @@ def _ui_kit(path, scale, page_size):
             raise ValueError(f"{key}: stretch {stretch} needs {', '.join(fixed)} insets of 0")
         if not isinstance(record.get("file"), str) or not record["file"]:
             raise ValueError(f"{key}: the report names no file")
-        sequence = _still(element_path(path, record["file"]), key)
+        sequence = _still(element_path(path, record["file"]), key, max_source_pixels=max_source_pixels)
         image = sequence.frames[0]
         if record.get("size") != {"w": image.width, "h": image.height}:
             raise ValueError(f"{key}: the report's size does not match {record['file']}")
@@ -320,22 +409,23 @@ def _ui_kit(path, scale, page_size):
     return entries, frames, sources
 
 
-def _encode_image(image, fmt):
+def _encode_image(image, fmt, *, webp_options=None):
     buffer = BytesIO()
     if fmt == "PNG":
         image.save(buffer, format="PNG", compress_level=9)
     else:
-        image.save(buffer, format="WEBP", lossless=True, exact=True, method=6)
+        options = webp_options if webp_options is not None else {"lossless": True, "exact": True, "method": 6}
+        image.save(buffer, format="WEBP", **options)
     return buffer.getvalue()
 
 
-def _prepare_scene(request, base, page_size):
+def _prepare_scene(request, base, page_size, *, max_source_pixels=None, webp_options=None, no_png=False):
     """The version 2 sections: manifest entries, atlas frames, tile files and the sources they read."""
     frames, files, sources = [], {}, set()
     images = {}
     for entry in _entries(request, "images", {"id", "source", "display", "resample", "anchor", "footprint"}):
         key = f"image/{entry['id']}"
-        sequence = _still(base / entry["source"], key, anchor=entry.get("anchor"))
+        sequence = _still(base / entry["source"], key, anchor=entry.get("anchor"), max_source_pixels=max_source_pixels)
         _fixed_display(entry, key)
         size, anchor, sampling = _display(sequence, entry)
         _fits(key, size, page_size)
@@ -346,15 +436,18 @@ def _prepare_scene(request, base, page_size):
     tiles = {}
     for entry in _entries(request, "tiles", {"id", "source", "display"}):
         key = f"tile/{entry['id']}"
-        sequence = _still(base / entry["source"], key)
+        sequence = _still(base / entry["source"], key, max_source_pixels=max_source_pixels)
         _fixed_display(entry, key)
         image = sequence.frames[0]
         dimension, value = next(iter(entry["display"].items()))
         target = _integer(value, f"display {dimension}")
         scale = target / (image.width if dimension == "width" else image.height)
         png, webp = f"tile-{entry['id']}.png", f"tile-{entry['id']}.webp"
-        files[png], files[webp] = _encode_image(image, "PNG"), _encode_image(image, "WEBP")
-        tiles[entry["id"]] = {"image": png, "webp": webp, "size": {"w": image.width, "h": image.height},
+        files[webp] = _encode_image(image, "WEBP", webp_options=webp_options)
+        if not no_png:
+            files[png] = _encode_image(image, "PNG")
+        tiles[entry["id"]] = {"image": webp if no_png else png, "webp": webp,
+                              "size": {"w": image.width, "h": image.height},
                               "display_size": {"w": max(1, round(image.width * scale)),
                                                "h": max(1, round(image.height * scale))}}
         sources.update(sequence.source_files)
@@ -370,12 +463,14 @@ def _prepare_scene(request, base, page_size):
         if "kit" in ui:
             if not isinstance(ui["kit"], str) or not ui["kit"]:
                 raise ValueError("ui.kit must be the path of a ui-kit report")
-            nine_slice, kit_frames, kit_sources = _ui_kit((base / ui["kit"]).resolve(), scale, page_size)
+            nine_slice, kit_frames, kit_sources = _ui_kit(
+                (base / ui["kit"]).resolve(), scale, page_size, max_source_pixels=max_source_pixels
+            )
             frames += kit_frames
             sources |= kit_sources
         for entry in _entries(ui, "icons", {"id", "source", "display", "resample"}):
             key = f"icon/{entry['id']}"
-            sequence = _still(base / entry["source"], key)
+            sequence = _still(base / entry["source"], key, max_source_pixels=max_source_pixels)
             _fixed_display(entry, key)
             size, _anchor, sampling = _display(sequence, entry)
             _fits(key, size, page_size)
@@ -419,8 +514,33 @@ def _paste_extruded(sheet, image, x, y):
             sheet.putpixel((x + dx, y + dy), image.getpixel((sx, sy)))
 
 
-def _encode(pages, animations, max_bytes, sections=None, files=None):
+def _dump_manifest(manifest):
+    return (json.dumps(manifest, ensure_ascii=False, separators=(",", ":"), allow_nan=False) + "\n").encode()
+
+
+def _build_variant_manifest(base_manifest, variant, *, no_png):
+    quality, alpha_quality = _resolve_variant_quality(variant)
+    var_manifest = copy.deepcopy(base_manifest)
+    var_manifest["webp_variant"] = {
+        "name": variant,
+        "lossless": False,
+        "quality": quality,
+        "alpha_quality": alpha_quality,
+        "method": 6,
+    }
+    for index, tex in enumerate(var_manifest.get("textures", [])):
+        var_webp = f"atlas-{index:03d}_{variant}.webp"
+        tex["webp"] = var_webp
+        if no_png:
+            tex["image"] = var_webp
+            tex["meta"]["image"] = var_webp
+    return var_manifest
+
+
+def _encode(pages, animations, max_bytes, sections=None, files=None, *, webp_options=None, no_png=False, variants=()):
     """Pages, then any version 2 files, then the manifest; ``sections`` makes it a version 2 manifest."""
+    main_webp_opts = webp_options if webp_options is not None else {"lossless": True, "exact": True, "method": 6}
+    lossy_variants = [v for v in variants if v != "lossless"]
     payloads, textures = {}, []
     total = 0
     for index, (width, height, placed) in enumerate(pages):
@@ -433,29 +553,45 @@ def _encode(pages, animations, max_bytes, sections=None, files=None):
                              "spriteSourceSize": {"x": 0, "y": 0, **size}, "sourceSize": size,
                              "pivot": {"x": anchor[0]/image.width, "y": anchor[1]/image.height}}
         png_name, webp_name = f"atlas-{index:03d}.png", f"atlas-{index:03d}.webp"
-        for name, fmt, options in ((png_name, "PNG", {"compress_level": 9}),
-                                   (webp_name, "WEBP", {"lossless": True, "exact": True, "method": 6})):
+        encode_targets = []
+        if not no_png:
+            encode_targets.append((png_name, "PNG", {"compress_level": 9}))
+        encode_targets.append((webp_name, "WEBP", main_webp_opts))
+        for variant in lossy_variants:
+            q, aq = _resolve_variant_quality(variant)
+            encode_targets.append((
+                f"atlas-{index:03d}_{variant}.webp",
+                "WEBP",
+                {"lossless": False, "quality": q, "alpha_quality": aq, "method": 6},
+            ))
+        for name, fmt, options in encode_targets:
             buffer = BytesIO()
             sheet.save(buffer, format=fmt, **options)
             payloads[name] = buffer.getvalue()
             total += len(payloads[name])
-            if total > max_bytes:
-                raise ValueError(f"game pack exceeds {max_bytes} bytes (50 MB maximum)")
-        textures.append({"image": png_name, "webp": webp_name, "frames": records,
-                         "meta": {"image": png_name, "format": "RGBA8888", "size": {"w": width, "h": height}, "scale": "1"}})
+            _check_budget(total, max_bytes)
+        primary_image = webp_name if no_png else png_name
+        textures.append({"image": primary_image, "webp": webp_name, "frames": records,
+                         "meta": {"image": primary_image, "format": "RGBA8888", "size": {"w": width, "h": height}, "scale": "1"}})
     for name, data in (files or {}).items():
         payloads[name] = data
         total += len(data)
-        if total > max_bytes:
-            raise ValueError(f"game pack exceeds {max_bytes} bytes (50 MB maximum)")
+        _check_budget(total, max_bytes)
     result = {"kind": "sprite-gen-game-pack", "version": 1, "textures": textures, "animations": animations}
     if sections is not None:
         result["version"] = 2
         result.update(sections)
-    payloads["game-pack.json"] = (json.dumps(result, ensure_ascii=False, separators=(",", ":"), allow_nan=False) + "\n").encode()
-    if total + len(payloads["game-pack.json"]) > max_bytes:
-        raise ValueError(f"game pack exceeds {max_bytes} bytes (50 MB maximum, including its manifest)")
-    return result, payloads
+    payloads["game-pack.json"] = _dump_manifest(result)
+    total += len(payloads["game-pack.json"])
+    variant_manifests = {}
+    for variant in lossy_variants:
+        var_manifest = _build_variant_manifest(result, variant, no_png=no_png)
+        variant_manifests[variant] = var_manifest
+        manifest_bytes = _dump_manifest(var_manifest)
+        payloads[f"game-pack_{variant}.json"] = manifest_bytes
+        total += len(manifest_bytes)
+    _check_budget(total, max_bytes, suffix=", including its manifest")
+    return result, payloads, variant_manifests
 
 
 def _publish(out_dir, payloads):
@@ -487,17 +623,41 @@ def _publish(out_dir, payloads):
             shutil.rmtree(stage)
 
 
-def pack(request: Path, out_dir: Path, *, page_size=MAX_PAGE_SIZE, max_bytes=MAX_BYTES):
+def pack(
+    request: Path,
+    out_dir: Path,
+    *,
+    page_size=MAX_PAGE_SIZE,
+    max_bytes=MAX_BYTES,
+    allow_large=False,
+    max_source_pixels=None,
+    webp_quality="lossless",
+    webp_alpha_quality=95,
+    no_png=False,
+    webp_variants=None,
+):
     page_size = _integer(page_size, "page size", maximum=MAX_PAGE_SIZE)
-    max_bytes = _integer(max_bytes, "max bytes", maximum=MAX_BYTES)
+    allow_large = _bool_flag(allow_large, "allow large")
+    no_png = _bool_flag(no_png, "no png")
+    max_bytes_limit = _resolve_max_bytes(max_bytes, allow_large=allow_large)
+    resolved_max_pixels = resolve_max_source_pixels(max_source_pixels)
+    webp_options = _resolve_webp_options(webp_quality, webp_alpha_quality)
+    parsed_variants = _parse_webp_variants(webp_variants, is_lossless=webp_options["lossless"])
     request, out_dir = Path(request).expanduser().resolve(), Path(out_dir).expanduser().resolve()
     document = json.loads(request.read_text(encoding="utf-8"))
     version = _version(document)
-    animations, frames, sources = _prepare(document, request.parent, page_size)
+    animations, frames, sources = _prepare(document, request.parent, page_size, max_source_pixels=resolved_max_pixels)
     # `files` is the audio loop's name below; the version 2 tile files must not share it.
     sections = tile_files = None
     if version == 2:
-        sections, scene_frames, tile_files, scene_sources = _prepare_scene(document, request.parent, page_size)
+        sections, scene_frames, tile_files, scene_sources = _prepare_scene(
+            document,
+            request.parent,
+            page_size,
+            max_source_pixels=resolved_max_pixels,
+            webp_options=webp_options,
+            no_png=no_png,
+        )
         frames = sorted(frames + scene_frames, key=lambda f: f[0])
         sources |= scene_sources
         names = [name for name, _image, _anchor in frames]
@@ -515,7 +675,7 @@ def pack(request: Path, out_dir: Path, *, page_size=MAX_PAGE_SIZE, max_bytes=MAX
             raise ValueError(f"duplicate audio id: {asset_id}")
         if not isinstance(entry.get("source"), str) or not entry["source"]:
             raise ValueError("each audio entry requires a source path")
-        remaining = max_bytes - sum(map(len, audio_payloads.values()))
+        remaining = math.inf if max_bytes_limit is None else max_bytes_limit - sum(map(len, audio_payloads.values()))
         record, files, paths = load_sound(request.parent / entry["source"], remaining)
         for fmt, data in files.items():
             name = f"audio-{asset_id}.{fmt}"
@@ -527,17 +687,29 @@ def pack(request: Path, out_dir: Path, *, page_size=MAX_PAGE_SIZE, max_bytes=MAX
         raise ValueError("game pack request declares nothing to pack: give it an asset, a scene entry or a sound")
     if any(same_folder(path, out_dir) or inside_folder(path, out_dir) for path in sources | {request}):
         raise ValueError("output directory must not contain any source file")
-    result, payloads = _encode(_layout(frames, page_size) if frames else [], animations, max_bytes, sections, tile_files)
+    result, payloads, variant_manifests = _encode(
+        _layout(frames, page_size) if frames else [],
+        animations,
+        max_bytes_limit,
+        sections,
+        tile_files,
+        webp_options=webp_options,
+        no_png=no_png,
+        variants=parsed_variants,
+    )
     if audio:
         helper, module = audio_player()
         audio_payloads[helper["path"]] = module
         for record in audio.values():
             record["player"] = helper
-        result["audio"] = dict(sorted(audio.items()))
+        sorted_audio = dict(sorted(audio.items()))
+        result["audio"] = sorted_audio
         payloads.update(audio_payloads)
-        payloads["game-pack.json"] = (json.dumps(result, ensure_ascii=False, separators=(",", ":"), allow_nan=False) + "\n").encode()
-        if sum(map(len, payloads.values())) > max_bytes:
-            raise ValueError(f"game pack exceeds {max_bytes} bytes (including audio)")
+        payloads["game-pack.json"] = _dump_manifest(result)
+        for variant, var_manifest in variant_manifests.items():
+            var_manifest["audio"] = copy.deepcopy(sorted_audio)
+            payloads[f"game-pack_{variant}.json"] = _dump_manifest(var_manifest)
+        _check_budget(sum(map(len, payloads.values())), max_bytes_limit, suffix=", including audio")
     _publish(out_dir, payloads)
     return result
 
@@ -548,12 +720,35 @@ def add_arguments(parser):
     parser.add_argument("--out-dir", type=Path, required=True, help="new directory for the immutable pack")
     parser.add_argument("--page-size", type=int, default=MAX_PAGE_SIZE)
     parser.add_argument("--max-bytes", type=int, default=MAX_BYTES)
+    parser.add_argument("--allow-large", action="store_true",
+                        help="lift the 50 MB max-bytes cap and allow --max-bytes 0 for unlimited")
+    parser.add_argument("--max-source-pixels", type=int, default=None,
+                        help=f"maximum source image pixels (default: {MAX_SOURCE_PIXELS}, or SPRITE_GEN_MAX_SOURCE_PIXELS)")
+    parser.add_argument("--webp-quality", default="lossless",
+                        help="WebP encoding quality: lossless or integer 1..100 (default: lossless)")
+    parser.add_argument("--webp-alpha-quality", type=int, default=95,
+                        help="WebP alpha quality 1..100 for lossy WebP (default: 95)")
+    parser.add_argument("--no-png", "--skip-png", dest="no_png", action="store_true",
+                        help="skip writing atlas PNGs and point textures[].image and meta.image to WebP")
+    parser.add_argument("--webp-variants", default=None,
+                        help="comma-separated WebP variants to emit alongside main pack (e.g. q90,q80 or lossless,q90,q80)")
 
 
 def run(**kwargs):
     try:
-        result = pack(kwargs["request"], kwargs["out_dir"], page_size=kwargs.get("page_size", MAX_PAGE_SIZE),
-                      max_bytes=kwargs.get("max_bytes", MAX_BYTES))
+        no_png = kwargs["no_png"] if "no_png" in kwargs else kwargs.get("skip_png", False)
+        result = pack(
+            kwargs["request"],
+            kwargs["out_dir"],
+            page_size=kwargs.get("page_size", MAX_PAGE_SIZE),
+            max_bytes=kwargs.get("max_bytes", MAX_BYTES),
+            allow_large=kwargs.get("allow_large", False),
+            max_source_pixels=kwargs.get("max_source_pixels"),
+            webp_quality=kwargs.get("webp_quality", "lossless"),
+            webp_alpha_quality=kwargs.get("webp_alpha_quality", 95),
+            no_png=no_png,
+            webp_variants=kwargs.get("webp_variants"),
+        )
     except (ValueError, OSError) as exc:
         raise SystemExit(f"game-pack: {exc}") from exc
     print(json.dumps({"ok": True, "manifest": str(Path(kwargs["out_dir"]) / "game-pack.json"),

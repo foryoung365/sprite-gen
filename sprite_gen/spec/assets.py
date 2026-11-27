@@ -16,7 +16,9 @@ import hashlib
 from io import BytesIO
 import json
 import math
+import os
 from pathlib import Path
+import threading
 
 from PIL import Image
 
@@ -166,25 +168,67 @@ def _read_bytes(path: Path) -> bytes:
 # most this many pixels: 256 MB of RGBA, below Pillow's decompression-bomb
 # warning, so a hostile header is refused before any pixel data is decoded.
 MAX_SOURCE_PIXELS = 67_108_864
+MAX_SOURCE_PIXELS_ENV = "SPRITE_GEN_MAX_SOURCE_PIXELS"
+_PILLOW_LIMIT_LOCK = threading.Lock()
 
 
-def _decode_image(data: bytes) -> Image.Image:
+def _validate_positive_int(value, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
+
+
+def resolve_max_source_pixels(max_source_pixels: int | None = None) -> int:
+    """Resolve pixel limit from explicit argument, environment fallback, or module default."""
+    if max_source_pixels is not None:
+        return _validate_positive_int(max_source_pixels, "max_source_pixels")
+    env_value = os.environ.get(MAX_SOURCE_PIXELS_ENV)
+    if env_value is not None and env_value.strip() != "":
+        try:
+            parsed = int(env_value.strip())
+        except ValueError as exc:
+            raise ValueError(f"{MAX_SOURCE_PIXELS_ENV} must be a positive integer") from exc
+        return _validate_positive_int(parsed, MAX_SOURCE_PIXELS_ENV)
+    return MAX_SOURCE_PIXELS
+
+
+def _decode_opened_image(data: bytes, limit: int) -> Image.Image:
     with Image.open(BytesIO(data)) as image:
         if getattr(image, "n_frames", 1) != 1:
             raise ValueError("animated image input requires an explicit frame descriptor")
         width, height = image.size
-        if width < 1 or height < 1 or width * height > MAX_SOURCE_PIXELS:
-            raise ValueError(f"source image {width}x{height} exceeds the supported {MAX_SOURCE_PIXELS} pixels")
+        if width < 1 or height < 1 or width * height > limit:
+            raise ValueError(f"source image {width}x{height} exceeds the supported {limit} pixels")
         return image.convert("RGBA")
+
+
+def _decode_image(data: bytes, *, max_source_pixels: int | None = None) -> Image.Image:
+    limit = resolve_max_source_pixels(max_source_pixels)
+    # Pillow checks Image.MAX_IMAGE_PIXELS during Image.open() before size is inspected;
+    # bypass Pillow's global guard only when the caller raises the limit above it.
+    if Image.MAX_IMAGE_PIXELS is not None and limit > Image.MAX_IMAGE_PIXELS:
+        with _PILLOW_LIMIT_LOCK:
+            previous = Image.MAX_IMAGE_PIXELS
+            Image.MAX_IMAGE_PIXELS = None
+            try:
+                return _decode_opened_image(data, limit)
+            finally:
+                Image.MAX_IMAGE_PIXELS = previous
+    return _decode_opened_image(data, limit)
 
 
 class _Snapshot:
     """Bytes of every file touched by one load, each read once, with their digests."""
 
-    def __init__(self):
+    def __init__(self, *, max_source_pixels: int | None = None):
         self.digests: dict[Path, str] = {}
         self._bytes: dict[Path, bytes] = {}
         self._images: dict[Path, Image.Image] = {}
+        self._max_source_pixels = (
+            resolve_max_source_pixels(max_source_pixels) if max_source_pixels is not None else None
+        )
+        if self._max_source_pixels is None:
+            resolve_max_source_pixels(None)
 
     def read(self, path: Path) -> bytes:
         if path not in self._bytes:
@@ -195,7 +239,10 @@ class _Snapshot:
 
     def image(self, path: Path) -> Image.Image:
         if path not in self._images:
-            self._images[path] = _decode_image(self.read(path))
+            if self._max_source_pixels is None:
+                self._images[path] = _decode_image(self.read(path))
+            else:
+                self._images[path] = _decode_image(self.read(path), max_source_pixels=self._max_source_pixels)
         return self._images[path]
 
     def json(self, path: Path):
@@ -221,15 +268,16 @@ def _integer(value, name):
     return int(number)
 
 
-def load_asset(source: Path, *, state=None, fps=None, anchor=None) -> FrameSequence:
+def load_asset(source: Path, *, state=None, fps=None, anchor=None, max_source_pixels: int | None = None) -> FrameSequence:
     source = Path(source).expanduser().resolve()
-    return _load_asset(source, _Snapshot(), state=state, fps=fps, anchor=anchor)
+    return _load_asset(source, _Snapshot(max_source_pixels=max_source_pixels), state=state, fps=fps, anchor=anchor)
 
 
-def load_asset_states(source: Path, *, state=None, fps=None, anchor=None) -> dict[str | None, FrameSequence]:
+def load_asset_states(source: Path, *, state=None, fps=None, anchor=None,
+                      max_source_pixels: int | None = None) -> dict[str | None, FrameSequence]:
     """Read every declared state from one snapshot; never discover frames by filename sort."""
     source = Path(source).expanduser().resolve()
-    snapshot = _Snapshot()
+    snapshot = _Snapshot(max_source_pixels=max_source_pixels)
     states = [state]
     if state is None and source.suffix.lower() == ".json":
         data = snapshot.json(source)
